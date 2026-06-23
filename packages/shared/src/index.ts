@@ -3,3 +3,6 @@ export * from "./config/index.js";
 export * from "./accounts.js";
 export * from "./retry.js";
 export * from "./funding.js";
+export * from "./memos.js";
+export * from "./money.js";
+export * from "./client.js";
