@@ -1,0 +1,17 @@
+{
+  "name": "@lending/bootstrap",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "bootstrap": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "tsx src/cli.ts",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@lending/shared": "workspace:*",
+    "xrpl": "^5.0.0"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "seed": "example-deterministic-seed-change-me",
+  "network": "devnet",
+  "asset": {
+    "currency": "524C555344000000000000000000000000000000"
+  },
+  "withdrawalPolicy": "first-come-first-serve",
+  "domain": {
+    "acceptedCredentials": [{ "credentialType": "LENDPARTY" }]
+  },
+  "coverRateMinimum": 100000,
+  "coverRateLiquidation": 100000,
+  "managementFeeRate": 0,
+  "coverAmount": "20000",
+  "debtMaximum": "100000",
+  "pool": {
+    "depositors": 2,
+    "borrowers": 2
+  },
+  "fundingXrpPerAccount": 30
+}

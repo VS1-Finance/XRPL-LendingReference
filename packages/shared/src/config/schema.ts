@@ -1,0 +1,85 @@
+import { z } from "zod";
+import { AssetConfigSchema } from "./asset.js";
+
+// Networks the harness knows how to reach. Both carry the full vault + lending amendment stack.
+export const NetworkSchema = z.enum(["devnet", "wasm-devnet"]);
+export type Network = z.infer<typeof NetworkSchema>;
+
+// Only one withdrawal policy is exposed by the current ledger build:
+// first-come-first-serve. Kept as a named enum so additional policies slot in without a config
+// break if the ledger later exposes them.
+export const WithdrawalPolicySchema = z.enum(["first-come-first-serve"]);
+export type WithdrawalPolicy = z.infer<typeof WithdrawalPolicySchema>;
+
+// A credential a domain will accept: an issuer plus a credential type. The type is given as
+// readable ASCII in config and hex-encoded for the ledger at provision time.
+const AcceptedCredentialSchema = z.object({
+  // Optional: when omitted, the harness uses its own derived issuer account.
+  issuer: z
+    .string()
+    .regex(/^r[1-9A-HJ-NP-Za-km-z]{24,34}$/, "must be a classic r-address")
+    .optional(),
+  credentialType: z.string().min(1).max(64),
+});
+
+// Cover and fee rates are scaled integers on the ledger (a rate of 100000 reads as 100%).
+// They are validated as non-negative integers here; semantic bounds are enforced at provision
+// time against live broker fields.
+const ScaledRate = z.number().int().nonnegative();
+
+export const ConfigSchema = z
+  .object({
+    // Seed for deterministic account derivation. The same seed reproduces the same accounts,
+    // so a re-run reuses addresses instead of leaking fresh ones.
+    seed: z.string().min(16, "seed must be at least 16 characters of entropy"),
+
+    network: NetworkSchema,
+
+    // Identifies a provisioned environment end to end. Stamped on every transaction and used as
+    // the key for idempotent re-runs and scoped teardown. Generated if omitted.
+    setupId: z.string().min(1).max(64).optional(),
+
+    asset: AssetConfigSchema,
+
+    withdrawalPolicy: WithdrawalPolicySchema.default("first-come-first-serve"),
+
+    domain: z.object({
+      // The ledger caps a domain at 10 accepted credentials.
+      acceptedCredentials: z
+        .array(AcceptedCredentialSchema)
+        .min(1, "a domain needs at least one accepted credential")
+        .max(10, "a domain accepts at most 10 credentials"),
+    }),
+
+    coverRateMinimum: ScaledRate,
+    coverRateLiquidation: ScaledRate,
+    managementFeeRate: ScaledRate,
+
+    // First-loss capital seeded into the broker, in whole asset units. Must clear the minimum
+    // cover requirement; checked on-ledger after the broker exists.
+    coverAmount: z.string().regex(/^\d+(\.\d+)?$/, "coverAmount must be a positive decimal string"),
+
+    // Maximum aggregate debt the broker may originate, in whole asset units.
+    debtMaximum: z.string().regex(/^\d+(\.\d+)?$/, "debtMaximum must be a positive decimal string"),
+
+    pool: z.object({
+      depositors: z.number().int().min(1),
+      borrowers: z.number().int().min(1),
+    }),
+
+    // Per-account XRP funded during fan-out, covering the base reserve, owner reserves for trust
+    // lines and objects, and transaction fees.
+    fundingXrpPerAccount: z.number().int().positive().default(30),
+  })
+  .strict()
+  .superRefine((cfg, ctx) => {
+    if (cfg.coverRateLiquidation > cfg.coverRateMinimum) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["coverRateLiquidation"],
+        message: "coverRateLiquidation cannot exceed coverRateMinimum",
+      });
+    }
+  });
+
+export type Config = z.infer<typeof ConfigSchema>;

@@ -1,0 +1,21 @@
+{
+  "name": "lending-reference",
+  "version": "0.0.0",
+  "private": true,
+  "description": "XRPL Permissioned Lending Reference Implementation",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "typecheck": "tsc -b",
+    "bootstrap": "tsx packages/bootstrap/src/cli.ts",
+    "clean": "tsc -b --clean"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
