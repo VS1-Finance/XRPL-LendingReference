@@ -27,6 +27,15 @@ importers:
         specifier: ^5.0.0
         version: 5.0.0
 
+  packages/lifecycle:
+    dependencies:
+      '@lending/shared':
+        specifier: workspace:*
+        version: link:../shared
+      xrpl:
+        specifier: ^5.0.0
+        version: 5.0.0
+
   packages/shared:
     dependencies:
       xrpl:
