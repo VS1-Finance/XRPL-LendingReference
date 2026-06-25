@@ -1,0 +1,135 @@
+// History store for a provisioned lending environment. A ledger reset wipes the chain, so this
+// store is the durable source of truth for what happened — the schema is designed to survive a
+// reset (it carries network id, ledger index, and a reset-epoch column) even though reset-recovery
+// logic is not part of this skeleton.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Every relevant transaction, raw and natively-decoded. The tx hash is the primary key, which is
+// what makes capture idempotent: re-seeing a transaction is a no-op.
+model Transaction {
+  txHash      String   @id
+  setupId     String
+  networkId   String
+  ledgerIndex Int
+  resetEpoch  Int      @default(0)
+  txType      String
+  raw         Json
+  parsed      Json
+  createdAt   DateTime @default(now())
+
+  events Event[]
+
+  @@index([setupId])
+  @@index([ledgerIndex])
+  @@index([setupId, ledgerIndex])
+  @@map("transactions")
+}
+
+// A normalized, typed event derived from a transaction: a deposit, an origination, a payment, a
+// default, a cover operation, or a credential operation. Carries the correlation id so a run's
+// actions can be reassembled in order.
+model Event {
+  id            String  @id
+  txHash        String
+  setupId       String
+  correlationId String?
+  type          String
+  ledgerIndex   Int
+  seq           Int
+  payload       Json
+
+  transaction Transaction @relation(fields: [txHash], references: [txHash], onDelete: Cascade)
+
+  @@index([setupId])
+  @@index([correlationId])
+  @@index([setupId, ledgerIndex, seq])
+  @@map("events")
+}
+
+// At-least-once capture marker. A transaction's event is written together with an outbox row in one
+// database transaction; a worker confirms persistence by stamping persistedAt. An unconfirmed row
+// is safe to replay because the write keyed on tx hash is idempotent.
+model Outbox {
+  id          String    @id
+  txHash      String    @unique
+  setupId     String
+  persistedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([persistedAt])
+  @@map("outbox")
+}
+
+// Per-setup ingestion cursor: the last ledger index fully persisted, so a restart resumes without
+// gaps or double-counts.
+model IngestCursor {
+  setupId          String   @id
+  lastLedgerIndex  Int
+  resetEpoch       Int      @default(0)
+  updatedAt        DateTime @updatedAt
+
+  @@map("ingest_cursor")
+}
+
+// ---- Derived current state, projected from the event stream ("what is true now") ----
+// Money is stored as integer base units (BigInt), never floats.
+
+model VaultState {
+  setupId         String   @id
+  vaultId         String
+  assetsTotal     BigInt   @default(0)
+  assetsAvailable BigInt   @default(0)
+  lossUnrealized  BigInt   @default(0)
+  shareOutstanding BigInt  @default(0)
+  updatedLedger   Int
+  resetEpoch      Int      @default(0)
+
+  @@map("state_vault")
+}
+
+model LoanState {
+  setupId             String
+  loanId              String
+  status              String
+  principalOutstanding BigInt @default(0)
+  totalOutstanding    BigInt  @default(0)
+  paymentRemaining    Int     @default(0)
+  updatedLedger       Int
+  resetEpoch          Int     @default(0)
+
+  @@id([setupId, loanId])
+  @@index([setupId])
+  @@map("state_loan")
+}
+
+model BrokerState {
+  setupId        String  @id
+  brokerId       String
+  coverAvailable BigInt  @default(0)
+  debtTotal      BigInt  @default(0)
+  updatedLedger  Int
+  resetEpoch     Int     @default(0)
+
+  @@map("state_broker")
+}
+
+model CredentialState {
+  setupId       String
+  subject       String
+  credentialType String
+  status        String
+  updatedLedger Int
+  resetEpoch    Int      @default(0)
+
+  @@id([setupId, subject, credentialType])
+  @@index([setupId])
+  @@map("state_credential")
+}
