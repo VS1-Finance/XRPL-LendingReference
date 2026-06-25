@@ -1,14 +1,85 @@
 import { db, disconnectDb } from "./db.js";
+import { watchedFromProvisioned } from "./environment.js";
+import { runSubscriber } from "./subscriber.js";
+import { actionsForSetup, stateForSetup, transactionCount } from "./query.js";
 
-// Entry point for the history-store tooling. The start and query commands are wired alongside the
-// subscriber and projection; this scope confirms the database connection.
+const USAGE = `ingester — capture and query a lending environment's history
+
+usage:
+  ingester start --provisioned <file> [--from-ledger <n>] [--once]
+  ingester query --setup-id <id> [--correlation-id <id>] [--state]
+
+options:
+  --provisioned <file>   provisioned environment graph (which accounts to watch)
+  --from-ledger <n>      backfill from this ledger index instead of the stored cursor
+  --once                 backfill and exit instead of holding the live stream open
+  --setup-id <id>        the run to query
+  --correlation-id <id>  narrow the action list to one correlation id
+  --state                report current derived state instead of the action list
+`;
+
+class CliError extends Error {}
+
+function parseFlags(argv: string[]): Map<string, string | boolean> {
+  const flags = new Map<string, string | boolean>();
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (!arg.startsWith("--")) continue;
+    const key = arg.slice(2);
+    const next = argv[i + 1];
+    if (next === undefined || next.startsWith("--")) flags.set(key, true);
+    else { flags.set(key, next); i++; }
+  }
+  return flags;
+}
+
+function requireString(flags: Map<string, string | boolean>, key: string): string {
+  const v = flags.get(key);
+  if (typeof v !== "string" || !v) throw new CliError(`missing required --${key}`);
+  return v;
+}
+
+async function start(flags: Map<string, string | boolean>): Promise<void> {
+  const env = watchedFromProvisioned(requireString(flags, "provisioned"));
+  const options: Parameters<typeof runSubscriber>[2] = { log: (m) => console.log(m) };
+  if (typeof flags.get("from-ledger") === "string") options.fromLedger = Number(flags.get("from-ledger"));
+  if (flags.get("once") === true) options.once = true;
+
+  await runSubscriber(db(), env, options);
+  console.log(`captured ${await transactionCount(db(), env.setupId)} transactions for ${env.setupId}`);
+}
+
+async function query(flags: Map<string, string | boolean>): Promise<void> {
+  const setupId = requireString(flags, "setup-id");
+  if (flags.get("state") === true) {
+    console.log(JSON.stringify(await stateForSetup(db(), setupId), null, 2));
+    return;
+  }
+  const correlationId = typeof flags.get("correlation-id") === "string" ? (flags.get("correlation-id") as string) : undefined;
+  const actions = await actionsForSetup(db(), setupId, correlationId);
+  for (const a of actions) {
+    console.log(`${String(a.seq).padStart(3)}  ${a.type.padEnd(20)} ${a.correlationId ?? "-"}  ${a.txHash.slice(0, 16)}…  (ledger ${a.ledgerIndex})`);
+  }
+  console.log(`\n${actions.length} actions`);
+}
+
 async function main(): Promise<void> {
-  await db().$queryRaw`SELECT 1`;
-  console.log("history store reachable");
-  await disconnectDb();
+  const argv = process.argv.slice(2);
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
+    console.log(USAGE);
+    return;
+  }
+  const [command, rest] = [argv[0], argv.slice(1)];
+  try {
+    if (command === "start") await start(parseFlags(rest));
+    else if (command === "query") await query(parseFlags(rest));
+    else throw new CliError(`unknown command: ${command}`);
+  } finally {
+    await disconnectDb();
+  }
 }
 
 main().catch((err) => {
-  console.error(err instanceof Error ? err.message : String(err));
+  console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
   process.exitCode = 1;
 });

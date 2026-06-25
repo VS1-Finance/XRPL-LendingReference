@@ -5,3 +5,4 @@ export { captureTransaction, advanceCursor, lastLedgerIndex, type CaptureResult 
 export { decodeTransaction, type DecodedTransaction } from "./decode.js";
 export { projectEvent } from "./project.js";
 export { projectState } from "./state.js";
+export { actionsForSetup, stateForSetup, transactionCount, type ActionRow, type CurrentState } from "./query.js";
