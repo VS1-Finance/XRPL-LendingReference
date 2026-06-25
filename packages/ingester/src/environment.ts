@@ -12,6 +12,7 @@ const NETWORK_IDS: Record<string, string> = {
 interface ProvisionedFile {
   setupId: string;
   network: "devnet" | "wasm-devnet";
+  objects?: { shareMptId?: string };
   accounts: {
     issuer: { address: string };
     owner: { address: string };
@@ -35,10 +36,13 @@ export function watchedFromProvisioned(path: string): WatchedEnvironment {
     ...file.accounts.borrowers.map((a) => a.address),
   ];
 
-  return {
+  const env: WatchedEnvironment = {
     setupId: file.setupId,
     network: file.network,
     networkId: NETWORK_IDS[file.network] ?? "0",
+    owner: file.accounts.owner.address,
     accounts,
   };
+  if (file.objects?.shareMptId) env.shareMptId = file.objects.shareMptId;
+  return env;
 }

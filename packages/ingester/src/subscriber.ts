@@ -4,11 +4,14 @@ import type { PrismaClient } from "@prisma/client";
 import { advanceCursor, captureTransaction, lastLedgerIndex } from "./capture.js";
 import { decodeTransaction, type TxStreamLike } from "./decode.js";
 import { projectEvent } from "./project.js";
+import { projectState } from "./state.js";
 
 export interface WatchedEnvironment {
   setupId: string;
   network: "devnet" | "wasm-devnet";
   networkId: string;
+  owner: string;
+  shareMptId?: string;
   accounts: string[];
 }
 
@@ -39,7 +42,7 @@ export async function runSubscriber(db: PrismaClient, env: WatchedEnvironment, o
 
     await new Promise<void>((resolve) => {
       client.on("transaction", (msg) => {
-        void handle(db, env, msg as unknown as TxStreamLike, log);
+        void handle(client, db, env, msg as unknown as TxStreamLike, log);
       });
       client.on("disconnected", () => resolve());
       process.once("SIGINT", () => resolve());
@@ -67,20 +70,21 @@ async function backfill(client: Client, db: PrismaClient, env: WatchedEnvironmen
         ...(marker ? { marker } : {}),
       });
       for (const entry of res.result.transactions as unknown as TxStreamLike[]) {
-        await handle(db, env, entry, log);
+        await handle(client, db, env, entry, log);
       }
       marker = res.result.marker;
     } while (marker);
   }
 }
 
-async function handle(db: PrismaClient, env: WatchedEnvironment, entry: TxStreamLike, log: (m: string) => void): Promise<void> {
+async function handle(client: Client, db: PrismaClient, env: WatchedEnvironment, entry: TxStreamLike, log: (m: string) => void): Promise<void> {
   const decoded = decodeTransaction(entry);
   if (!decoded || decoded.setupId !== env.setupId) return;
 
   const result = await captureTransaction(db, env.networkId, decoded);
   if (result.inserted) {
     await projectEvent(db, env, decoded);
+    await projectState(db, client, env, decoded, env.owner);
     await advanceCursor(db, env.setupId, decoded.ledgerIndex);
     log(`captured ${decoded.txType} ${decoded.txHash.slice(0, 12)}… (ledger ${decoded.ledgerIndex})`);
   }
