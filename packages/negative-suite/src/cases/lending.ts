@@ -34,24 +34,23 @@ const N7: NegativeCase = {
   },
 };
 
-// N8 — clawback is an issuer power that exists only on an issued asset. Attempting a vault clawback
-// where no Amount can be formed (the XRP-vault case) is rejected at the transaction layer. On an
-// issued-asset vault the same guard surfaces as a malformed/again rejection rather than a success.
+// N8 — a vault clawback against an account that is not a share-holding vault member is rejected: the
+// issuer power has no authorized target to act on, so the ledger rejects it (tecNO_AUTH) rather than
+// moving value. Related rejection codes are accepted so the case survives a code change, but a
+// success would fail it.
 const N8: NegativeCase = {
   id: "N8",
-  title: "clawback where the asset has no issuer",
-  guards: "issuer powers are asset-typed",
-  expected: { kind: "reject-any", codes: ["tecNO_PERMISSION", "temMALFORMED", "invalid field", "tecNO_LINE"] },
+  title: "clawback against a non-member",
+  guards: "issuer clawback requires an authorized holder",
+  expected: { kind: "reject-any", codes: ["tecNO_AUTH", "tecPRECISION_LOSS", "tecNO_PERMISSION", "tecNO_LINE", "tecNO_ENTRY"] },
   async run(ctx) {
-    // Attempt to claw back from an account that holds no vault shares: there is nothing to claw, so
-    // the issuer power has no valid target and the action is rejected.
     const stranger = (await ctx.client.fundWallet(null, { amount: "50" })).wallet;
     return submitExpectReject(ctx, ctx.wallets.issuer, {
       TransactionType: "VaultClawback",
       Account: ctx.wallets.issuer.address,
       VaultID: ctx.env.objects.vaultId!,
       Holder: stranger.address,
-      Amount: iouAmount(ctx, "1"),
+      Amount: iouAmount(ctx, "1000"),
     }, "N8-clawback");
   },
 };
