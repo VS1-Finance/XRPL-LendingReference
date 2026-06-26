@@ -1,18 +1,10 @@
 {
-  "name": "@lending/bootstrap",
+  "name": "@lending/negative-suite",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
   "bin": {
-    "bootstrap": "./src/cli.ts"
+    "negatives": "./src/cli.ts"
   },
   "scripts": {
     "start": "tsx src/cli.ts",
@@ -20,6 +12,7 @@
   },
   "dependencies": {
     "@lending/shared": "workspace:*",
+    "@lending/bootstrap": "workspace:*",
     "xrpl": "^5.0.0"
   }
 }
