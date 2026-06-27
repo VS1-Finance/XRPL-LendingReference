@@ -11,3 +11,5 @@ export {
   isHumanHeld,
   SeatOccupancyError,
 } from "./seat.js";
+export { type Session, createSession, attachSession, closeSession } from "./session.js";
+export { SessionRegistry, type SessionSummary } from "./registry.js";
