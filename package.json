@@ -14,6 +14,7 @@
     "lifecycle": "tsx packages/lifecycle/src/cli.ts",
     "ingester": "tsx packages/ingester/src/cli.ts",
     "negatives": "tsx packages/negative-suite/src/cli.ts",
+    "session": "tsx packages/session/src/cli.ts",
     "clean": "tsc -b --clean"
   },
   "devDependencies": {

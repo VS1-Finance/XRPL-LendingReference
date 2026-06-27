@@ -1,18 +1,10 @@
 {
-  "name": "@lending/lifecycle",
+  "name": "@lending/session",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
   "bin": {
-    "lifecycle": "./src/cli.ts"
+    "session": "./src/cli.ts"
   },
   "scripts": {
     "start": "tsx src/cli.ts",
@@ -20,6 +12,9 @@
   },
   "dependencies": {
     "@lending/shared": "workspace:*",
+    "@lending/bootstrap": "workspace:*",
+    "@lending/lifecycle": "workspace:*",
+    "@lending/ingester": "workspace:*",
     "xrpl": "^5.0.0"
   }
 }

@@ -5,6 +5,7 @@
     { "path": "./packages/bootstrap" },
     { "path": "./packages/lifecycle" },
     { "path": "./packages/ingester" },
-    { "path": "./packages/negative-suite" }
+    { "path": "./packages/negative-suite" },
+    { "path": "./packages/session" }
   ]
 }

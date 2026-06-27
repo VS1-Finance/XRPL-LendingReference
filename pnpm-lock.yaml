@@ -64,6 +64,24 @@ importers:
         specifier: ^5.0.0
         version: 5.0.0
 
+  packages/session:
+    dependencies:
+      '@lending/bootstrap':
+        specifier: workspace:*
+        version: link:../bootstrap
+      '@lending/ingester':
+        specifier: workspace:*
+        version: link:../ingester
+      '@lending/lifecycle':
+        specifier: workspace:*
+        version: link:../lifecycle
+      '@lending/shared':
+        specifier: workspace:*
+        version: link:../shared
+      xrpl:
+        specifier: ^5.0.0
+        version: 5.0.0
+
   packages/shared:
     dependencies:
       xrpl:
