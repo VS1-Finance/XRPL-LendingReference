@@ -13,3 +13,4 @@ export {
 } from "./seat.js";
 export { type Session, createSession, attachSession, closeSession } from "./session.js";
 export { SessionRegistry, type SessionSummary } from "./registry.js";
+export * from "./bots/index.js";
