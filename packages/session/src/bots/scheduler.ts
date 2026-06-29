@@ -1,11 +1,15 @@
 import { sleep } from "@lending/shared";
-import type { Role } from "@lending/shared";
 import type { Session } from "../session.js";
-import { isBotDriven, type Seat } from "../seat.js";
+import { isBotDriven, keyOf } from "../seat.js";
 import type { BotVariant } from "./variant.js";
+import { assignAutomatically, type VariantAssignment } from "./assignment.js";
 
 export interface SchedulerOptions {
+  // The variants a bot pool may run. Spread across seats automatically unless an explicit
+  // per-seat assignment is given.
   variants: BotVariant[];
+  // An explicit seat -> variant map, overriding automatic assignment.
+  assignment?: VariantAssignment;
   // Seconds between rounds.
   intervalSeconds?: number;
   // Stop after this many rounds (default: run until stopped).
@@ -29,7 +33,7 @@ export class BotScheduler {
   async run(): Promise<void> {
     const log = this.options.log ?? (() => {});
     const interval = (this.options.intervalSeconds ?? 15) * 1000;
-    const variantsByRole = indexByRole(this.options.variants);
+    const assignment = this.options.assignment ?? assignAutomatically(this.session, this.options.variants);
     this.running = true;
 
     let round = 0;
@@ -38,26 +42,16 @@ export class BotScheduler {
       for (const seat of this.session.seats.values()) {
         if (!this.running) break;
         if (!isBotDriven(seat)) continue; // a human holds this seat — stand down
-        const variant = variantsByRole.get(seat.role);
+        const variant = assignment.get(keyOf(seat));
         if (!variant) continue;
         try {
           await variant.tick({ session: this.session, seat, log });
         } catch (err) {
-          log(`bot ${keyLabel(seat)} error: ${err instanceof Error ? err.message : String(err)}`);
+          log(`bot ${keyOf(seat)} error: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
       if (this.options.maxRounds && round >= this.options.maxRounds) break;
       if (this.running) await sleep(interval);
     }
   }
-}
-
-function indexByRole(variants: BotVariant[]): Map<Role, BotVariant> {
-  const map = new Map<Role, BotVariant>();
-  for (const v of variants) map.set(v.role, v);
-  return map;
-}
-
-function keyLabel(seat: Seat): string {
-  return `${seat.role}:${seat.index}`;
 }
