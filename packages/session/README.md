@@ -32,6 +32,10 @@ session join --setup-id <id> --seat borrower:0 --as alice --seed <seed>
 # drive the bots (the seat alice holds is left alone)
 session run-bots --setup-id <id> --seed <seed> --rounds 5
 
+# drive a mixed pool: some depositors hold, some churn; borrowers span on-time, late,
+# overpaying and defaulting, spread across the seats automatically
+session run-bots --setup-id <id> --seed <seed> --profile adversarial --rounds 5
+
 # hand the seat back; a bot fills it again
 session release --setup-id <id> --seat borrower:0 --as alice --seed <seed>
 ```

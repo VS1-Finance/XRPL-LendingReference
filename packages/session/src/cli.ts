@@ -5,7 +5,7 @@ import { createSession, attachSession, closeSession } from "./session.js";
 import { claim, release } from "./seat.js";
 import { applyOccupancy, saveOccupancy } from "./occupancy.js";
 import { BotScheduler } from "./bots/scheduler.js";
-import { defaultVariants } from "./bots/variants.js";
+import { isProfileName, profileVariants } from "./bots/profiles.js";
 
 const USAGE = `session — create and drive lending sessions with any-role seats
 
@@ -14,7 +14,7 @@ usage:
   session list     [--out-dir <dir>]
   session join     --setup-id <id> --seat <role:index> --as <participant> --seed <seed> [--out-dir <dir>]
   session release  --setup-id <id> --seat <role:index> --as <participant> --seed <seed> [--out-dir <dir>]
-  session run-bots --setup-id <id> --seed <seed> [--rounds <n>] [--interval <s>] [--out-dir <dir>]
+  session run-bots --setup-id <id> --seed <seed> [--profile happy|adversarial] [--rounds <n>] [--interval <s>] [--out-dir <dir>]
 
 A session is a provisioned environment. Every role is a seat: bots fill the seats no human holds,
 and a participant claims a seat to act as that role. Multiple participants may hold different seats
@@ -97,16 +97,19 @@ async function runBots(flags: Map<string, string>): Promise<void> {
   const env = loadEnvironment(setupId, dir);
   if (!env) throw new CliError(`no session found for ${setupId}`);
 
+  const profile = flags.get("profile") ?? "happy";
+  if (!isProfileName(profile)) throw new CliError(`unknown --profile ${profile} (use happy or adversarial)`);
+
   const session = await attachSession(env, seed);
   try {
     applyOccupancy(setupId, session.seats, dir);
     const scheduler = new BotScheduler(session, {
-      variants: defaultVariants(),
+      variants: profileVariants(profile),
       intervalSeconds: Number(flags.get("interval") ?? 10),
       maxRounds: flags.get("rounds") ? Number(flags.get("rounds")) : 3,
       log: (m) => console.log(m),
     });
-    console.log(`running bots for ${setupId} (seats a human holds are left alone)`);
+    console.log(`running bots for ${setupId} with the ${profile} profile (seats a human holds are left alone)`);
     await scheduler.run();
     console.log("bot run complete");
   } finally {
