@@ -58,6 +58,29 @@ export const overpay = (extra = "1000"): BotVariant => ({
   },
 });
 
+// A borrower that repays early: it settles the loan in full as soon as it exists, without waiting
+// for the payment schedule. Models a borrower clearing debt ahead of term.
+export const repayEarly = (): BotVariant => ({
+  role: "borrower",
+  name: "repay-early",
+  async tick(ctx: BotContext): Promise<StepOutcome> {
+    const loanId = await ownerLoanId(ctx.session, ctx.seat.address);
+    if (!loanId) return idle;
+    const loan = await loanNode(ctx.session.client, loanId);
+    if (!loan || Number(loan.PaymentRemaining ?? 0) <= 0) return idle;
+
+    const amount = clampIssuedValueUp(String(loan.TotalValueOutstanding));
+    const r = await ctx.seat.signer.submit({
+      TransactionType: "LoanPay",
+      Account: ctx.seat.address,
+      LoanID: loanId,
+      Amount: iouAmount(ctx.session, amount),
+    });
+    ctx.log(`borrower ${ctx.seat.index} early repay ${amount} — ${r.engineResult}`);
+    return { acted: true, action: "LoanPay", result: r.engineResult, hash: r.hash };
+  },
+});
+
 // A borrower that never pays. The behaviour is the absence of payment, so the variant simply holds;
 // the loan is left to be defaulted from the broker side once its window elapses.
 export const defaulter = (): BotVariant => ({
