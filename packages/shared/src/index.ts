@@ -6,3 +6,4 @@ export * from "./funding.js";
 export * from "./memos.js";
 export * from "./money.js";
 export * from "./client.js";
+export * from "./random.js";
