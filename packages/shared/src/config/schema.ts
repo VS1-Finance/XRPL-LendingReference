@@ -70,6 +70,31 @@ export const ConfigSchema = z
     // Per-account XRP funded during fan-out, covering the base reserve, owner reserves for trust
     // lines and objects, and transaction fees.
     fundingXrpPerAccount: z.number().int().positive().default(30),
+
+    // Bot-run parameters. Optional: a run without this block uses built-in defaults. The seed makes
+    // a bot run reproducible; the weights bias how variants are spread across a pool. Weights are
+    // relative and need not sum to one.
+    bots: z
+      .object({
+        seed: z.string().min(1).default("bots"),
+        borrowerWeights: z
+          .object({
+            onTime: z.number().nonnegative().default(1),
+            late: z.number().nonnegative().default(0),
+            early: z.number().nonnegative().default(0),
+            overpay: z.number().nonnegative().default(0),
+            default: z.number().nonnegative().default(0),
+          })
+          .default({}),
+        depositorWeights: z
+          .object({
+            hold: z.number().nonnegative().default(1),
+            churn: z.number().nonnegative().default(0),
+            topUp: z.number().nonnegative().default(0),
+          })
+          .default({}),
+      })
+      .default({}),
   })
   .strict()
   .superRefine((cfg, ctx) => {

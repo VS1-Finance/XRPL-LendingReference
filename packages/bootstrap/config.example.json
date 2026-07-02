@@ -17,5 +17,10 @@
     "depositors": 2,
     "borrowers": 2
   },
-  "fundingXrpPerAccount": 30
+  "fundingXrpPerAccount": 30,
+  "bots": {
+    "seed": "bots-demo",
+    "borrowerWeights": { "onTime": 5, "late": 1, "early": 1, "overpay": 1, "default": 2 },
+    "depositorWeights": { "hold": 3, "churn": 1, "topUp": 1 }
+  }
 }
