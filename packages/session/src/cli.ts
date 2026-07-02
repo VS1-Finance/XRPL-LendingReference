@@ -6,6 +6,7 @@ import { claim, release } from "./seat.js";
 import { applyOccupancy, saveOccupancy } from "./occupancy.js";
 import { BotScheduler } from "./bots/scheduler.js";
 import { isProfileName, profileVariants } from "./bots/profiles.js";
+import { assignWeighted } from "./bots/weights.js";
 
 const USAGE = `session — create and drive lending sessions with any-role seats
 
@@ -14,7 +15,7 @@ usage:
   session list     [--out-dir <dir>]
   session join     --setup-id <id> --seat <role:index> --as <participant> --seed <seed> [--out-dir <dir>]
   session release  --setup-id <id> --seat <role:index> --as <participant> --seed <seed> [--out-dir <dir>]
-  session run-bots --setup-id <id> --seed <seed> [--profile happy|adversarial] [--rounds <n>] [--interval <s>] [--out-dir <dir>]
+  session run-bots --setup-id <id> --seed <seed> [--config <file> | --profile happy|adversarial] [--rounds <n>] [--interval <s>] [--out-dir <dir>]
 
 A session is a provisioned environment. Every role is a seat: bots fill the seats no human holds,
 and a participant claims a seat to act as that role. Multiple participants may hold different seats
@@ -97,20 +98,35 @@ async function runBots(flags: Map<string, string>): Promise<void> {
   const env = loadEnvironment(setupId, dir);
   if (!env) throw new CliError(`no session found for ${setupId}`);
 
+  // A config drives a weighted, reproducible pool (variants drawn per the config's bot weights and
+  // seed); without one, a named profile spreads variants evenly.
+  const configPath = flags.get("config");
   const profile = flags.get("profile") ?? "happy";
-  if (!isProfileName(profile)) throw new CliError(`unknown --profile ${profile} (use happy or adversarial)`);
+  if (!configPath && !isProfileName(profile)) throw new CliError(`unknown --profile ${profile} (use happy or adversarial)`);
 
   const session = await attachSession(env, seed);
   try {
     applyOccupancy(setupId, session.seats, dir);
-    const scheduler = new BotScheduler(session, {
-      variants: profileVariants(profile),
+
+    const schedulerOptions: ConstructorParameters<typeof BotScheduler>[1] = {
+      variants: [],
       intervalSeconds: Number(flags.get("interval") ?? 10),
       maxRounds: flags.get("rounds") ? Number(flags.get("rounds")) : 3,
       log: (m) => console.log(m),
-    });
-    console.log(`running bots for ${setupId} with the ${profile} profile (seats a human holds are left alone)`);
-    await scheduler.run();
+    };
+
+    let mode: string;
+    if (configPath) {
+      const config = loadConfig(configPath);
+      schedulerOptions.assignment = assignWeighted(session, config.bots);
+      mode = `weighted pool (bot seed ${config.bots.seed})`;
+    } else {
+      schedulerOptions.variants = profileVariants(profile as Parameters<typeof profileVariants>[0]);
+      mode = `${profile} profile`;
+    }
+
+    console.log(`running bots for ${setupId} with the ${mode} (seats a human holds are left alone)`);
+    await new BotScheduler(session, schedulerOptions).run();
     console.log("bot run complete");
   } finally {
     await closeSession(session);
