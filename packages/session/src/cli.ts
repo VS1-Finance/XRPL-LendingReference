@@ -15,6 +15,7 @@ usage:
   session list     [--out-dir <dir>]
   session join     --setup-id <id> --seat <role:index> --as <participant> --seed <seed> [--out-dir <dir>]
   session release  --setup-id <id> --seat <role:index> --as <participant> --seed <seed> [--out-dir <dir>]
+  session plan     --setup-id <id> --seed <seed> --config <file> [--out-dir <dir>]
   session run-bots --setup-id <id> --seed <seed> [--config <file> | --profile happy|adversarial] [--rounds <n>] [--interval <s>] [--out-dir <dir>]
 
 A session is a provisioned environment. Every role is a seat: bots fill the seats no human holds,
@@ -91,6 +92,31 @@ async function joinOrRelease(flags: Map<string, string>, mode: "join" | "release
   }
 }
 
+// Show the variant each seat's bot would run under a config's weights and seed, without touching the
+// network. Because the assignment is drawn from the seeded generator, printing it twice — or running
+// the pool later — yields the same mapping, which is how a run is verified reproducible before it is
+// driven live.
+async function plan(flags: Map<string, string>): Promise<void> {
+  const setupId = need(flags, "setup-id");
+  const seed = need(flags, "seed");
+  const dir = flags.get("out-dir");
+  const config = loadConfig(need(flags, "config"));
+  const env = loadEnvironment(setupId, dir);
+  if (!env) throw new CliError(`no session found for ${setupId}`);
+
+  const session = await attachSession(env, seed);
+  try {
+    const assignment = assignWeighted(session, config.bots);
+    console.log(`variant plan for ${setupId} (bot seed ${config.bots.seed}):`);
+    for (const [key, seat] of session.seats) {
+      const variant = assignment.get(key);
+      if (variant) console.log(`  ${key.padEnd(14)} ${variant.name}`);
+    }
+  } finally {
+    await closeSession(session);
+  }
+}
+
 async function runBots(flags: Map<string, string>): Promise<void> {
   const setupId = need(flags, "setup-id");
   const seed = need(flags, "seed");
@@ -154,6 +180,7 @@ async function main(): Promise<void> {
     case "list": return void list(flags);
     case "join": return joinOrRelease(flags, "join");
     case "release": return joinOrRelease(flags, "release");
+    case "plan": return plan(flags);
     case "run-bots": return runBots(flags);
     default:
       console.log(USAGE);

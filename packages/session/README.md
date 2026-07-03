@@ -36,6 +36,13 @@ session run-bots --setup-id <id> --seed <seed> --rounds 5
 # overpaying and defaulting, spread across the seats automatically
 session run-bots --setup-id <id> --seed <seed> --profile adversarial --rounds 5
 
+# drive a weighted pool from a config's bot weights and seed (reproducible)
+session run-bots --setup-id <id> --seed <seed> --config ./config.json --rounds 5
+
+# show the variant each seat would run under a config, without touching the network;
+# the same config and seed always produce the same plan
+session plan --setup-id <id> --seed <seed> --config ./config.json
+
 # hand the seat back; a bot fills it again
 session release --setup-id <id> --seat borrower:0 --as alice --seed <seed>
 ```
