@@ -1,0 +1,99 @@
+# Custom metrics derived from the history store, exposed to Prometheus by postgres_exporter. Each
+# query becomes a metric family; the setup id is a label so a dashboard can filter by run.
+
+lending_transactions:
+  query: |
+    SELECT "setupId" AS setup_id, count(*) AS total
+    FROM transactions
+    GROUP BY "setupId"
+  metrics:
+    - setup_id:
+        usage: LABEL
+        description: The provisioned environment (run) the metric belongs to
+    - total:
+        usage: GAUGE
+        description: Transactions captured for this run
+
+lending_events_by_type:
+  query: |
+    SELECT "setupId" AS setup_id, type AS event_type, count(*) AS total
+    FROM events
+    GROUP BY "setupId", type
+  metrics:
+    - setup_id:
+        usage: LABEL
+        description: The run the metric belongs to
+    - event_type:
+        usage: LABEL
+        description: Normalized event type (deposit, origination, payment, ...)
+    - total:
+        usage: GAUGE
+        description: Events of this type captured for this run
+
+lending_vault:
+  query: |
+    SELECT "setupId" AS setup_id,
+           "assetsTotal"::float8 AS assets_total,
+           "assetsAvailable"::float8 AS assets_available,
+           "shareOutstanding"::float8 AS shares_outstanding,
+           "updatedLedger" AS updated_ledger
+    FROM state_vault
+  metrics:
+    - setup_id:
+        usage: LABEL
+        description: The run the vault belongs to
+    - assets_total:
+        usage: GAUGE
+        description: Vault total assets, in base units
+    - assets_available:
+        usage: GAUGE
+        description: Vault available (unlent) assets, in base units
+    - shares_outstanding:
+        usage: GAUGE
+        description: Vault shares outstanding, in base units
+    - updated_ledger:
+        usage: GAUGE
+        description: Ledger index at which the vault state was last projected
+
+lending_broker_cover:
+  query: |
+    SELECT "setupId" AS setup_id,
+           "coverAvailable"::float8 AS cover_available,
+           "debtTotal"::float8 AS debt_total
+    FROM state_broker
+  metrics:
+    - setup_id:
+        usage: LABEL
+        description: The run the broker belongs to
+    - cover_available:
+        usage: GAUGE
+        description: First-loss cover available, in base units
+    - debt_total:
+        usage: GAUGE
+        description: Outstanding debt across the broker, in base units
+
+lending_loans_by_status:
+  query: |
+    SELECT "setupId" AS setup_id, status, count(*) AS total
+    FROM state_loan
+    GROUP BY "setupId", status
+  metrics:
+    - setup_id:
+        usage: LABEL
+        description: The run the loans belong to
+    - status:
+        usage: LABEL
+        description: Loan status (active, repaid, closed, defaulted)
+    - total:
+        usage: GAUGE
+        description: Loans in this status for this run
+
+lending_outbox_pending:
+  query: |
+    SELECT count(*) AS pending
+    FROM outbox
+    WHERE "persistedAt" IS NULL
+  metrics:
+    - pending:
+        usage: GAUGE
+        description: Outbox markers not yet confirmed persisted (should trend to zero)

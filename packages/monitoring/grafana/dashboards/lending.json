@@ -1,0 +1,94 @@
+{
+  "title": "Permissioned Lending — History Store",
+  "uid": "lending-history",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "setup_id",
+        "label": "Run",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(lending_transactions_total, setup_id)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Transactions captured",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(lending_transactions_total{setup_id=~\"$setup_id\"})", "legendFormat": "captured" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Outbox pending (should be zero)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "expr": "lending_outbox_pending", "legendFormat": "pending" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Loans by status",
+      "type": "piechart",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (status) (lending_loans_by_status_total{setup_id=~\"$setup_id\"})", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Vault assets",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "lending_vault_assets_total{setup_id=~\"$setup_id\"}", "legendFormat": "{{setup_id}} total" },
+        { "expr": "lending_vault_assets_available{setup_id=~\"$setup_id\"}", "legendFormat": "{{setup_id}} available" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Broker cover and debt",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "lending_broker_cover_cover_available{setup_id=~\"$setup_id\"}", "legendFormat": "{{setup_id}} cover" },
+        { "expr": "lending_broker_cover_debt_total{setup_id=~\"$setup_id\"}", "legendFormat": "{{setup_id}} debt" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Events by type",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (event_type) (lending_events_by_type_total{setup_id=~\"$setup_id\"})", "legendFormat": "{{event_type}}" }
+      ]
+    }
+  ]
+}

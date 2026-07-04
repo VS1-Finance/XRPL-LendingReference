@@ -1,0 +1,42 @@
+# A self-contained monitoring stack over the lending history store. It exposes derived metrics from
+# the store (transactions captured, vault assets, broker cover, loans by status, outbox backlog) and
+# renders them in Grafana. A third party can run it with `docker compose up` after pointing
+# DATABASE_URL at the history-store Postgres.
+#
+#   DATABASE_URL=postgresql://user:pass@host:5432/db docker compose up
+#
+# Grafana is served on http://localhost:3000, Prometheus on http://localhost:9090.
+
+services:
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    environment:
+      DATA_SOURCE_NAME: ${DATABASE_URL}
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/queries.yaml
+    volumes:
+      - ./queries.yaml:/etc/queries.yaml:ro
+    ports:
+      - "9187:9187"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - postgres-exporter
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
