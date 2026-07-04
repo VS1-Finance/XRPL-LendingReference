@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist"
+  },
+  "references": [
+    { "path": "../shared" },
+    { "path": "../bootstrap" },
+    { "path": "../lifecycle" },
+    { "path": "../ingester" },
+    { "path": "../session" }
+  ],
+  "include": ["src/**/*.ts"]
+}

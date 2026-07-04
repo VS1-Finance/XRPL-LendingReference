@@ -1,21 +1,14 @@
 {
-  "name": "@lending/session",
+  "name": "@lending/engine",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
   "bin": {
-    "session": "./src/cli.ts"
+    "engine": "./src/main.ts"
   },
   "scripts": {
-    "start": "tsx src/cli.ts",
+    "start": "tsx src/main.ts",
+    "dev": "tsx watch src/main.ts",
     "typecheck": "tsc -b"
   },
   "dependencies": {
@@ -23,6 +16,8 @@
     "@lending/bootstrap": "workspace:*",
     "@lending/lifecycle": "workspace:*",
     "@lending/ingester": "workspace:*",
+    "@lending/session": "workspace:*",
+    "fastify": "^5.1.0",
     "xrpl": "^5.0.0"
   }
 }
