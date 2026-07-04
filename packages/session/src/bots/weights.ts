@@ -6,6 +6,7 @@ import { overpay, defaulter, repayEarly, repayLate } from "./borrower-variants.j
 import { repayOnTime } from "./variants.js";
 import { depositAndHold } from "./variants.js";
 import { depositWithdrawCycle, topUp } from "./depositor-variants.js";
+import { brokerEnforcer } from "./owner-variants.js";
 import type { VariantAssignment } from "./assignment.js";
 
 // Relative weights that bias how variants are drawn for each seat of a pool. Weights need not sum to
@@ -49,5 +50,7 @@ function pickForRole(role: string, weights: BotWeights, rng: SeededRandom): BotV
       { value: topUp(), weight: w.topUp },
     ]);
   }
+  // The owner seat enforces defaults on delinquent loans; there is one behaviour, not a weighted set.
+  if (role === "owner") return brokerEnforcer();
   return undefined;
 }
