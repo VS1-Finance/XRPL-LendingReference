@@ -69,6 +69,47 @@ async function buildTransaction(session: Session, account: string, request: Acti
       };
     }
 
+    // Issuer actions: grant or revoke a credential for a subject account.
+    case "issue-credential":
+      return {
+        TransactionType: "CredentialCreate",
+        Account: account,
+        Subject: required(p, "subject"),
+        CredentialType: encodeCredentialType(p.credentialType ?? session.env.credentialType),
+      };
+
+    case "revoke-credential":
+      return {
+        TransactionType: "CredentialDelete",
+        Account: account,
+        Subject: required(p, "subject"),
+        CredentialType: encodeCredentialType(p.credentialType ?? session.env.credentialType),
+      };
+
+    // Vault-manager actions: adjust vault parameters, or swap the domain's accepted credentials.
+    case "set-vault":
+      return {
+        TransactionType: "VaultSet",
+        Account: account,
+        VaultID: session.env.objects.vaultId!,
+        ...(p.assetsMaximum ? { AssetsMaximum: p.assetsMaximum } : {}),
+      };
+
+    case "set-domain":
+      return {
+        TransactionType: "PermissionedDomainSet",
+        Account: account,
+        DomainID: session.env.objects.domainId!,
+        AcceptedCredentials: [
+          {
+            Credential: {
+              Issuer: p.issuer ?? session.env.accounts.issuer.address,
+              CredentialType: encodeCredentialType(p.credentialType ?? session.env.credentialType),
+            },
+          },
+        ],
+      };
+
     default:
       throw new ActionError(`unknown action ${request.action}`);
   }
@@ -117,6 +158,10 @@ function issuedAsset(session: Session): { currency: string; issuer: string } {
   const { currency, issuer } = session.env.asset;
   if (!issuer) throw new ActionError("session asset has no issuer", 500);
   return { currency, issuer };
+}
+
+function encodeCredentialType(type: string): string {
+  return Buffer.from(type, "utf8").toString("hex").toUpperCase();
 }
 
 function required(params: Record<string, string>, key: string): string {
