@@ -1,0 +1,37 @@
+import type { FastifyInstance, FastifyReply } from "fastify";
+import type { SessionService } from "../session-service.js";
+import { ActionError, dispatchAction, originate, type ActionRequest } from "../action-service.js";
+
+// The single action endpoint. Every human action against a seat — deposit, withdraw, repay,
+// originate — arrives here; the engine confirms the seat is held by the requesting participant,
+// builds the transaction, and submits it under the seat's identity.
+export function registerActionRoutes(app: FastifyInstance, sessions: SessionService): void {
+  app.post<{ Params: { id: string }; Body: ActionRequest & { participant: string } }>(
+    "/sessions/:id/actions",
+    async (request, reply) => {
+      const session = sessions.get(request.params.id);
+      if (!session) return reply.code(404).send({ error: `no session ${request.params.id}` });
+
+      const { participant, seat, action, params } = request.body ?? {};
+      if (!participant) return reply.code(400).send({ error: "participant is required" });
+      if (!seat || !action) return reply.code(400).send({ error: "seat and action are required" });
+
+      try {
+        // Origination is bilateral and takes its own path; everything else is a single-signer submit.
+        const result =
+          action === "originate"
+            ? await originate(session, seat, params ?? {}, participant)
+            : await dispatchAction(session, { seat, action, ...(params ? { params } : {}) }, participant);
+        return result;
+      } catch (err) {
+        return actionError(reply, err);
+      }
+    },
+  );
+}
+
+function actionError(reply: FastifyReply, err: unknown) {
+  if (err instanceof ActionError) return reply.code(err.status).send({ error: err.message });
+  const message = err instanceof Error ? err.message : String(err);
+  return reply.code(500).send({ error: message });
+}

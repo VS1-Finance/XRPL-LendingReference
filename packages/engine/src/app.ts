@@ -3,6 +3,7 @@ import type { EngineConfig } from "./config.js";
 import { SessionService } from "./session-service.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerSeatRoutes } from "./routes/seats.js";
+import { registerActionRoutes } from "./routes/actions.js";
 
 // Build the Fastify application: construct the services the engine owns and register the routes over
 // them. The bot scheduler lifecycle is owned by the server (started on ready, stopped on close) and
@@ -15,6 +16,7 @@ export function buildApp(config: EngineConfig): FastifyInstance {
 
   registerSessionRoutes(app, sessions);
   registerSeatRoutes(app, sessions);
+  registerActionRoutes(app, sessions);
 
   return app;
 }

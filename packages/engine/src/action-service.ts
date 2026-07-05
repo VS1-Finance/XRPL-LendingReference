@@ -1,0 +1,126 @@
+import { signLoanSetByCounterparty } from "xrpl";
+import type { SubmittableTransaction } from "xrpl";
+import { clampIssuedValueUp, deriveAccount } from "@lending/shared";
+import type { Session } from "@lending/session";
+
+export interface ActionRequest {
+  seat: string;
+  action: string;
+  params?: Record<string, string>;
+}
+
+export interface ActionResult {
+  action: string;
+  code: string;
+  hash?: string;
+}
+
+export class ActionError extends Error {
+  constructor(message: string, readonly status = 400) {
+    super(message);
+    this.name = "ActionError";
+  }
+}
+
+// Turns an API action request into an on-ledger transaction signed by the seat that owns it. A human
+// action and a bot action reach the ledger the same way — through the seat's signer — so this is the
+// single place a human's intent becomes a submission. The seat must be held by the requesting
+// participant, which the caller checks before dispatching here.
+export async function dispatchAction(session: Session, request: ActionRequest, participant: string): Promise<ActionResult> {
+  const seat = session.seats.get(request.seat);
+  if (!seat) throw new ActionError(`session has no seat ${request.seat}`, 404);
+  if (seat.occupant.kind !== "human" || seat.occupant.id !== participant) {
+    throw new ActionError(`${request.seat} is not held by ${participant}`, 409);
+  }
+
+  const tx = await buildTransaction(session, seat.address, request);
+  const result = await seat.signer.submit(tx);
+  return { action: request.action, code: result.engineResult, ...(result.hash ? { hash: result.hash } : {}) };
+}
+
+async function buildTransaction(session: Session, account: string, request: ActionRequest): Promise<SubmittableTransaction> {
+  const p = request.params ?? {};
+  const asset = issuedAsset(session);
+
+  switch (request.action) {
+    case "deposit":
+      return {
+        TransactionType: "VaultDeposit",
+        Account: account,
+        VaultID: session.env.objects.vaultId!,
+        Amount: { ...asset, value: required(p, "amount") },
+      };
+
+    case "withdraw":
+      return {
+        TransactionType: "VaultWithdraw",
+        Account: account,
+        VaultID: session.env.objects.vaultId!,
+        Amount: { ...asset, value: required(p, "amount") },
+      };
+
+    case "repay": {
+      const loanId = required(p, "loanId");
+      return {
+        TransactionType: "LoanPay",
+        Account: account,
+        LoanID: loanId,
+        Amount: { ...asset, value: clampIssuedValueUp(required(p, "amount")) },
+      };
+    }
+
+    default:
+      throw new ActionError(`unknown action ${request.action}`);
+  }
+}
+
+// Origination is bilateral, so it does not fit the single-signer submit path and is handled here:
+// the owner signs and the borrower counter-signs the same LoanSet. Called from the actions route for
+// the owner's originate action.
+export async function originate(session: Session, ownerSeatKey: string, params: Record<string, string>, participant: string): Promise<ActionResult> {
+  const owner = session.seats.get(ownerSeatKey);
+  if (!owner) throw new ActionError(`session has no seat ${ownerSeatKey}`, 404);
+  if (owner.occupant.kind !== "human" || owner.occupant.id !== participant) {
+    throw new ActionError(`${ownerSeatKey} is not held by ${participant}`, 409);
+  }
+  const borrowerSeat = session.seats.get(required(params, "borrower"));
+  if (!borrowerSeat) throw new ActionError(`session has no seat ${params.borrower}`, 404);
+
+  const loanSet = {
+    TransactionType: "LoanSet" as const,
+    Account: owner.address,
+    LoanBrokerID: session.env.objects.brokerId!,
+    Counterparty: borrowerSeat.address,
+    PrincipalRequested: required(params, "principal"),
+    InterestRate: Number(params.interestRate ?? 50000),
+    PaymentInterval: Number(params.interval ?? 60),
+    GracePeriod: Number(params.grace ?? 60),
+    LoanOriginationFee: "0",
+  };
+
+  // Origination needs two raw signatures on one transaction, which the single-signer submit path does
+  // not express, so the owner and borrower wallets are re-derived from the session seed for the
+  // bilateral sign. The derived addresses match the seats, which is what binds the signatures to the
+  // seats' identities.
+  const ownerWallet = deriveAccount(session.seed, "owner", owner.index).wallet;
+  const borrowerWallet = deriveAccount(session.seed, "borrower", borrowerSeat.index).wallet;
+  const prepared = await session.client.autofill(loanSet);
+  const ownerSigned = ownerWallet.sign(prepared);
+  const combined = signLoanSetByCounterparty(borrowerWallet, ownerSigned.tx_blob);
+  const res = await session.client.submitAndWait(combined.tx_blob);
+  const meta = res.result.meta;
+  const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";
+  return { action: "originate", code, hash: res.result.hash };
+}
+
+function issuedAsset(session: Session): { currency: string; issuer: string } {
+  const { currency, issuer } = session.env.asset;
+  if (!issuer) throw new ActionError("session asset has no issuer", 500);
+  return { currency, issuer };
+}
+
+function required(params: Record<string, string>, key: string): string {
+  const v = params[key];
+  if (v === undefined || v === "") throw new ActionError(`missing parameter ${key}`);
+  return v;
+}
