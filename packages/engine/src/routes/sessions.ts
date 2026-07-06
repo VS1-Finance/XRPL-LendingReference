@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { SessionService } from "../session-service.js";
+import { readSessionState } from "../state-service.js";
 
 // Session endpoints: create a session (provision a fresh environment), list sessions, and fetch one
 // session's detail (its seats and who holds each).
@@ -20,5 +21,13 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionSer
     const summary = sessions.summaryOf(request.params.id);
     if (!summary) return reply.code(404).send({ error: `no session ${request.params.id}` });
     return summary;
+  });
+
+  // A session's current on-chain state — vault, broker, loans, and seat occupancy — read live from
+  // the validated ledger. This is what a front end polls to watch the session evolve.
+  app.get<{ Params: { id: string } }>("/sessions/:id/state", async (request, reply) => {
+    const session = sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: `no session ${request.params.id}` });
+    return readSessionState(session);
   });
 }
