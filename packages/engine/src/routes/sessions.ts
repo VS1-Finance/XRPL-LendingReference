@@ -13,6 +13,35 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionSer
     return reply.code(201).send(summary);
   });
 
+  // Create a session while streaming provisioning progress as Server-Sent Events. Each ledger step
+  // emits a `step` event as it settles (action, result, transaction hash); provisioning ends with a
+  // `done` event carrying the session summary, or an `error` event if it fails. This lets a client
+  // show the environment being built step by step rather than waiting for one blocking response.
+  app.post<{ Body: { label?: string } }>("/sessions/stream", async (request, reply) => {
+    const label = request.body?.label;
+
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+      // Mirror the CORS allowance onto the raw stream, which bypasses the plugin's reply decoration.
+      "access-control-allow-origin": request.headers.origin ?? "*",
+    });
+
+    const send = (event: string, data: unknown): void => {
+      reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      const summary = await sessions.create(label, (record) => send("step", record));
+      send("done", summary);
+    } catch (err) {
+      send("error", { error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      reply.raw.end();
+    }
+  });
+
   // List all live sessions with their seat maps and open seats.
   app.get("/sessions", async () => sessions.list());
 

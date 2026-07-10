@@ -1,4 +1,4 @@
-import { BotScheduler, assignWeighted, type BotWeights } from "@lending/session";
+import { BotScheduler, assignWeighted, fillWithBot, type BotWeights } from "@lending/session";
 import type { Session } from "@lending/session";
 
 // Owns the running bot schedulers, one per session. A scheduler drives the bot-held seats of its
@@ -18,6 +18,10 @@ export class BotService {
   // configured weights and seed. Starting an already-running session is a no-op.
   start(session: Session, intervalSeconds: number): void {
     if (this.running.has(session.setupId)) return;
+    // Fill every unheld seat with a bot so "start bots" runs the whole market, not only the seats a
+    // bot already occupies. Seats a human holds are left untouched; a seat released later goes open
+    // again, and a subsequent start re-fills it.
+    for (const seat of session.seats.values()) fillWithBot(seat);
     const scheduler = new BotScheduler(session, {
       variants: [],
       assignment: assignWeighted(session, this.weights),

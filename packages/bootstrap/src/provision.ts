@@ -19,11 +19,14 @@ import {
   issueCredentials,
 } from "./steps.js";
 import { saveEnvironment } from "./store.js";
-import type { ProvisionedAccount, ProvisionedEnvironment } from "./types.js";
+import type { ProvisionedAccount, ProvisionedEnvironment, StepRecord } from "./types.js";
 
 export interface ProvisionOptions {
   outDir?: string;
   log?: (msg: string) => void;
+  // Called as each provisioning step settles (or is skipped), so a caller can stream progress —
+  // action, result, and transaction hash — while provisioning runs rather than only at the end.
+  onStep?: (record: StepRecord) => void;
   // A pre-supplied timestamp keeps the output reproducible in tests; defaults to now.
   now?: () => string;
 }
@@ -66,7 +69,7 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
       log,
     });
 
-    const deps = { client, config, accounts, setupId, env, log };
+    const deps = { client, config, accounts, setupId, env, log, onStep: options.onStep };
 
     await configureIssuer(deps);
 

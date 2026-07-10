@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Config } from "@lending/shared";
+import type { StepRecord } from "@lending/bootstrap";
 import { createSession, SessionRegistry, type Session, type SessionSummary } from "@lending/session";
 
 // Owns the live sessions the engine serves. It provisions new sessions from the base configuration —
@@ -11,15 +12,16 @@ export class SessionService {
   constructor(private readonly baseConfig: Config) {}
 
   // Provision a fresh session and register it. A short label may be supplied to make a session easier
-  // to recognize; the on-chain identity is always unique regardless.
-  async create(label?: string): Promise<SessionSummary> {
+  // to recognize; the on-chain identity is always unique regardless. An optional onStep sink receives
+  // each provisioning step as it settles, so the caller can stream progress to a client.
+  async create(label?: string, onStep?: (record: StepRecord) => void): Promise<SessionSummary> {
     const token = this.uniqueToken(label);
     const config: Config = {
       ...this.baseConfig,
       seed: `${this.baseConfig.seed}-${token}`,
       setupId: `session-${token}`,
     };
-    const session = await createSession(config);
+    const session = await createSession(config, onStep);
     this.registry.register(session);
     return this.summaryOf(session.setupId)!;
   }

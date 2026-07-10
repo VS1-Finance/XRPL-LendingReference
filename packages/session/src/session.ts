@@ -1,5 +1,5 @@
 import { connect, deriveAccount, type Config, type Network, type Role } from "@lending/shared";
-import { provision, type ProvisionedEnvironment } from "@lending/bootstrap";
+import { provision, type ProvisionedEnvironment, type StepRecord } from "@lending/bootstrap";
 import type { Client } from "xrpl";
 import { ServerSigner } from "./signer.js";
 import { fillWithBot, keyOf, type Seat } from "./seat.js";
@@ -17,9 +17,13 @@ export interface Session {
 }
 
 // Create a session: provision a fresh environment, connect, and build a seat per role with each
-// seat bot-filled and backed by a server signer over its derived account.
-export async function createSession(config: Config): Promise<Session> {
-  const env = await provision(config, {});
+// seat bot-filled and backed by a server signer over its derived account. An optional onStep sink
+// receives each provisioning step as it settles, so a caller can stream progress.
+export async function createSession(
+  config: Config,
+  onStep?: (record: StepRecord) => void,
+): Promise<Session> {
+  const env = await provision(config, { onStep });
   const client = await connect(config.network);
   const seats = buildSeats(client, env, config.seed);
   return { setupId: env.setupId, network: config.network, seed: config.seed, env, seats, client };

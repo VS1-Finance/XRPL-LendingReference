@@ -13,3 +13,6 @@ out/
 .DS_Store
 .idea/
 .vscode/
+
+# Planning and internal working notes — not part of the deliverable.
+docs/

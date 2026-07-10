@@ -22,6 +22,11 @@ export class ActionError extends Error {
   }
 }
 
+// tfLoanDefault on LoanManage — the flag the owner sets to default a delinquent loan. This is the
+// same transaction the broker-enforcer bot submits; exposing it as an owner action lets a human do by
+// hand what the bot does automatically.
+const TF_LOAN_DEFAULT = 65536;
+
 // Turns an API action request into an on-ledger transaction signed by the seat that owns it. A human
 // action and a bot action reach the ledger the same way — through the seat's signer — so this is the
 // single place a human's intent becomes a submission. The seat must be held by the requesting
@@ -108,6 +113,16 @@ async function buildTransaction(session: Session, account: string, request: Acti
             },
           },
         ],
+      };
+
+    // Loan-originator action: default a delinquent loan. The owner does by hand what the
+    // broker-enforcer bot does each round — set tfLoanDefault on a named loan.
+    case "manage-loan":
+      return {
+        TransactionType: "LoanManage",
+        Account: account,
+        LoanID: required(p, "loanId"),
+        Flags: TF_LOAN_DEFAULT,
       };
 
     default:

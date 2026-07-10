@@ -34,6 +34,9 @@ interface StepDeps {
   setupId: string;
   env: ProvisionedEnvironment;
   log: (msg: string) => void;
+  // Optional progress sink: called with each step record as it settles, so provisioning can be
+  // streamed to a caller in real time.
+  onStep?: (record: StepRecord) => void;
 }
 
 // Run a single provisioning step. If `alreadyDone` resolves true the transaction is skipped and a
@@ -48,7 +51,9 @@ async function step(
   const corr = correlationId(deps.setupId, action);
   if (await alreadyDone()) {
     deps.log(`${action} — already present, skip`);
-    deps.env.steps.push({ action, correlationId: corr, result: "skipped", skipped: true });
+    const skippedRecord: StepRecord = { action, correlationId: corr, result: "skipped", skipped: true };
+    deps.env.steps.push(skippedRecord);
+    deps.onStep?.(skippedRecord);
     return;
   }
   const ctx: SubmitContext = { setupId: deps.setupId, correlationId: corr };
@@ -57,6 +62,7 @@ async function step(
   const record: StepRecord = { action, correlationId: corr, result, skipped: false };
   if (txHash !== undefined) record.txHash = txHash;
   deps.env.steps.push(record);
+  deps.onStep?.(record);
 }
 
 export async function configureIssuer(deps: StepDeps): Promise<void> {
