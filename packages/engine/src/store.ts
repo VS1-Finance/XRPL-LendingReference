@@ -114,6 +114,29 @@ export class EngineStore {
     });
   }
 
+  // Record the provisioning steps as the genesis of a session's action log — the on-ledger work that
+  // built the environment (funding, credentials, vault, broker, cover). Attributed to "system" since
+  // provisioning is not a seat. Called once, right after the session is saved, so these occupy the
+  // first seq positions before any human or bot action.
+  async saveProvisioningSteps(
+    setupId: string,
+    steps: { action: string; result: string; txHash?: string }[],
+  ): Promise<void> {
+    if (steps.length === 0) return;
+    await this.db.actionLog.createMany({
+      data: steps.map((s, i) => ({
+        setupId,
+        seq: i + 1,
+        actor: "system",
+        role: "system",
+        by: "system",
+        action: s.action,
+        code: s.result,
+        hash: s.txHash ?? null,
+      })),
+    });
+  }
+
   // The action log for a session, oldest first.
   async getLog(setupId: string): Promise<StoredAction[]> {
     const rows = await this.db.actionLog.findMany({

@@ -37,6 +37,12 @@ export class SessionService {
       { setupId: session.setupId, token, network: session.network, label, env: session.env },
       summary.seats.map((s) => ({ seatKey: s.key, occupant: s.occupant })),
     );
+    // Record the provisioning steps as the genesis of the session's log, so the Activity view shows
+    // how the environment was built — before any human or bot action.
+    await this.store.saveProvisioningSteps(
+      session.setupId,
+      session.env.steps.map((s) => ({ action: s.action, result: s.result, ...(s.txHash ? { txHash: s.txHash } : {}) })),
+    );
     return summary;
   }
 
