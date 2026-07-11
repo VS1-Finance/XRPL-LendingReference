@@ -15,6 +15,9 @@ export interface SchedulerOptions {
   // Stop after this many rounds (default: run until stopped).
   maxRounds?: number;
   log?: (msg: string) => void;
+  // Called when a bot seat acts in a round, so the action can be recorded. Only fired when the
+  // variant actually submitted a transaction (StepOutcome.acted).
+  onOutcome?: (seatKey: string, role: string, action: string, result: string, hash?: string) => void;
 }
 
 // Drives the bot-held seats of a session. Each round it visits every seat; for a seat currently
@@ -45,7 +48,10 @@ export class BotScheduler {
         const variant = assignment.get(keyOf(seat));
         if (!variant) continue;
         try {
-          await variant.tick({ session: this.session, seat, log });
+          const outcome = await variant.tick({ session: this.session, seat, log });
+          if (outcome.acted) {
+            this.options.onOutcome?.(keyOf(seat), seat.role, outcome.action, outcome.result, outcome.hash);
+          }
         } catch (err) {
           log(`bot ${keyOf(seat)} error: ${err instanceof Error ? err.message : String(err)}`);
         }

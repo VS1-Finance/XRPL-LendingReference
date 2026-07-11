@@ -16,3 +16,6 @@ out/
 
 # Planning and internal working notes — not part of the deliverable.
 docs/
+
+# Generated Prisma client for the engine (regenerated from schema).
+packages/engine/src/generated/

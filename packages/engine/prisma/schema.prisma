@@ -1,0 +1,71 @@
+// Operational store for the engine: the sessions it is serving, who holds each seat, and the log of
+// every action taken. This is separate from the ingester's history store — the engine owns its own
+// database — so it generates its own Prisma client into the package rather than the shared default.
+//
+// No secrets are stored. A session persists its derivation token and its public environment (account
+// addresses and object ids); wallets are re-derived from the configured seed and the token at load,
+// so the database never holds a private key.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("ENGINE_DATABASE_URL")
+}
+
+// A provisioned session the engine is serving. `token` is the per-session component of the derivation
+// seed — with the configured base seed it reconstructs every wallet, which is why it must be stored to
+// recover a session after a restart. `env` is the full ProvisionedEnvironment (addresses, object ids,
+// steps) as JSON — all public, no keys.
+model Session {
+  setupId    String   @id
+  token      String
+  network    String
+  label      String?
+  createdAt  DateTime @default(now())
+  vaultId    String?
+  brokerId   String?
+  domainId   String?
+  shareMptId String?
+  env        Json
+
+  seats   SeatOccupancy[]
+  actions ActionLog[]
+}
+
+// Who holds a seat. Replaces the JSON occupancy sidecar so occupancy survives restarts and is queried
+// from the same store as everything else.
+model SeatOccupancy {
+  setupId     String
+  seatKey     String
+  kind        String // open | bot | human
+  participant String?
+
+  session Session @relation(fields: [setupId], references: [setupId], onDelete: Cascade)
+
+  @@id([setupId, seatKey])
+}
+
+// One recorded action — human, bot, or system — with its ledger result. `params` is stored raw so the
+// client can format a human-readable detail at render time. `seq` is monotonic per session and drives
+// stable ordering.
+model ActionLog {
+  id      String   @id @default(cuid())
+  setupId String
+  seq     Int
+  ts      DateTime @default(now())
+  actor   String // seat key, e.g. "depositor:0"
+  role    String
+  by      String // human | bot | system
+  action  String
+  code    String // ledger result, e.g. "tesSUCCESS" or "tecNO_AUTH"
+  hash    String?
+  params  Json?
+
+  session Session @relation(fields: [setupId], references: [setupId], onDelete: Cascade)
+
+  @@index([setupId, seq])
+}

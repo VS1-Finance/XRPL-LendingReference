@@ -1,14 +1,27 @@
 import { BotScheduler, assignWeighted, fillWithBot, type BotWeights } from "@lending/session";
 import type { Session } from "@lending/session";
+import type { SessionService } from "./session-service.js";
+
+// The ledger transaction types bots submit, mapped to the engine's action vocabulary so a bot action
+// reads the same as the equivalent human action in the log.
+const BOT_ACTION: Record<string, string> = {
+  VaultDeposit: "deposit",
+  VaultWithdraw: "withdraw",
+  LoanPay: "repay",
+  LoanManage: "manage-loan",
+};
 
 // Owns the running bot schedulers, one per session. A scheduler drives the bot-held seats of its
 // session continuously; a seat a human claims is skipped on the next round, so bots and humans
-// coexist. The service starts and stops schedulers on request and shuts them all down when the
-// engine closes.
+// coexist. Each bot action is recorded in the session's log. The service starts and stops schedulers
+// on request and shuts them all down when the engine closes.
 export class BotService {
   private readonly running = new Map<string, BotScheduler>();
 
-  constructor(private readonly weights: BotWeights) {}
+  constructor(
+    private readonly weights: BotWeights,
+    private readonly sessions: SessionService,
+  ) {}
 
   isRunning(setupId: string): boolean {
     return this.running.has(setupId);
@@ -26,6 +39,16 @@ export class BotService {
       variants: [],
       assignment: assignWeighted(session, this.weights),
       intervalSeconds,
+      onOutcome: (seatKey, role, action, result, hash) => {
+        void this.sessions.recordAction(session.setupId, {
+          actor: seatKey,
+          role,
+          by: "bot",
+          action: BOT_ACTION[action] ?? action,
+          code: result,
+          hash,
+        });
+      },
     });
     this.running.set(session.setupId, scheduler);
     // Run in the background; the scheduler loops until stopped.

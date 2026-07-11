@@ -9,7 +9,15 @@
   "scripts": {
     "start": "tsx src/main.ts",
     "dev": "tsx watch src/main.ts",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:validate": "prisma validate"
+  },
+  "prisma": {
+    "schema": "prisma/schema.prisma"
   },
   "dependencies": {
     "@lending/shared": "workspace:*",
@@ -18,7 +26,11 @@
     "@lending/ingester": "workspace:*",
     "@lending/session": "workspace:*",
     "@fastify/cors": "^11.0.0",
+    "@prisma/client": "^6.1.0",
     "fastify": "^5.1.0",
     "xrpl": "^5.0.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.1.0"
   }
 }

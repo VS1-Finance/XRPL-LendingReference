@@ -59,4 +59,11 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionSer
     if (!session) return reply.code(404).send({ error: `no session ${request.params.id}` });
     return readSessionState(session);
   });
+
+  // A session's action log — every human, bot, and system action with its ledger result, oldest
+  // first. Raw params are returned so the client can format a human-readable detail.
+  app.get<{ Params: { id: string } }>("/sessions/:id/log", async (request, reply) => {
+    if (!sessions.get(request.params.id)) return reply.code(404).send({ error: `no session ${request.params.id}` });
+    return sessions.log(request.params.id);
+  });
 }

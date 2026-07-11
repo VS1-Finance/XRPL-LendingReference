@@ -22,6 +22,19 @@ export function registerActionRoutes(app: FastifyInstance, sessions: SessionServ
           action === "originate"
             ? await originate(session, seat, params ?? {}, participant)
             : await dispatchAction(session, { seat, action, ...(params ? { params } : {}) }, participant);
+
+        // Record the human action in the session log, whatever its ledger result — a rejection is as
+        // much a part of the record as a success.
+        const role = session.seats.get(seat)?.role ?? seat.split(":")[0] ?? seat;
+        await sessions.recordAction(request.params.id, {
+          actor: seat,
+          role,
+          by: "human",
+          action,
+          code: result.code,
+          ...(result.hash ? { hash: result.hash } : {}),
+          ...(params ? { params } : {}),
+        });
         return result;
       } catch (err) {
         return actionError(reply, err);

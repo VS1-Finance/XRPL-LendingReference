@@ -3,11 +3,8 @@ import { SeatOccupancyError } from "@lending/session";
 import type { SessionService } from "../session-service.js";
 
 // Seat endpoints: a participant claims a seat to take over that role, and releases it back to open
-// where a bot fills it again. Occupancy lives in the registry's in-memory seats — the engine is a
-// single long-running process, so there is no cross-process sidecar to persist.
+// where a bot fills it again. Occupancy is written through to the store so it survives a restart.
 export function registerSeatRoutes(app: FastifyInstance, sessions: SessionService): void {
-  const registry = sessions.registryHandle();
-
   // Claim a seat for a participant. Rejected if a different participant already holds it.
   app.post<{ Params: { id: string; seat: string }; Body: { participant: string } }>(
     "/sessions/:id/seats/:seat/claim",
@@ -16,7 +13,7 @@ export function registerSeatRoutes(app: FastifyInstance, sessions: SessionServic
       if (!participant) return reply.code(400).send({ error: "participant is required" });
       if (!sessions.get(request.params.id)) return reply.code(404).send({ error: `no session ${request.params.id}` });
       try {
-        registry.claimSeat(request.params.id, request.params.seat, participant);
+        await sessions.claimSeat(request.params.id, request.params.seat, participant);
       } catch (err) {
         return seatError(reply, err);
       }
@@ -32,7 +29,7 @@ export function registerSeatRoutes(app: FastifyInstance, sessions: SessionServic
       if (!participant) return reply.code(400).send({ error: "participant is required" });
       if (!sessions.get(request.params.id)) return reply.code(404).send({ error: `no session ${request.params.id}` });
       try {
-        registry.releaseSeat(request.params.id, request.params.seat, participant);
+        await sessions.releaseSeat(request.params.id, request.params.seat, participant);
       } catch (err) {
         return seatError(reply, err);
       }

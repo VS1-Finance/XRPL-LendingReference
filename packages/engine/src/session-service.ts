@@ -2,18 +2,25 @@ import { createHash } from "node:crypto";
 import type { Config } from "@lending/shared";
 import type { StepRecord } from "@lending/bootstrap";
 import { createSession, SessionRegistry, type Session, type SessionSummary } from "@lending/session";
+import type { EngineStore, StoredAction } from "./store.js";
 
 // Owns the live sessions the engine serves. It provisions new sessions from the base configuration —
-// each with a unique setup id and derivation seed so they do not collide on-chain — and keeps them in
-// the registry for the API to act on.
+// each with a unique setup id and derivation seed so they do not collide on-chain — keeps them in the
+// registry for the API to act on, and persists them to the store so they survive a restart. No secret
+// is persisted: a session's derivation token plus the base seed re-derive every wallet at load.
 export class SessionService {
   private readonly registry = new SessionRegistry();
+  // The derivation token for each live session, needed to reconstruct the seed when reloading.
+  private readonly tokens = new Map<string, string>();
 
-  constructor(private readonly baseConfig: Config) {}
+  constructor(
+    private readonly baseConfig: Config,
+    private readonly store: EngineStore,
+  ) {}
 
-  // Provision a fresh session and register it. A short label may be supplied to make a session easier
-  // to recognize; the on-chain identity is always unique regardless. An optional onStep sink receives
-  // each provisioning step as it settles, so the caller can stream progress to a client.
+  // Provision a fresh session, register it, and persist it with its initial (all-bot) occupancy. A
+  // short label may be supplied to make a session easier to recognize; the on-chain identity is always
+  // unique regardless. An optional onStep sink receives each provisioning step as it settles.
   async create(label?: string, onStep?: (record: StepRecord) => void): Promise<SessionSummary> {
     const token = this.uniqueToken(label);
     const config: Config = {
@@ -23,7 +30,31 @@ export class SessionService {
     };
     const session = await createSession(config, onStep);
     this.registry.register(session);
-    return this.summaryOf(session.setupId)!;
+    this.tokens.set(session.setupId, token);
+
+    const summary = this.summaryOf(session.setupId)!;
+    await this.store.saveSession(
+      { setupId: session.setupId, token, network: session.network, label, env: session.env },
+      summary.seats.map((s) => ({ seatKey: s.key, occupant: s.occupant })),
+    );
+    return summary;
+  }
+
+  // Reload every persisted session on boot: re-derive its seed from the base seed and stored token,
+  // re-attach it to the ledger, and restore who held each seat. Sessions survive an engine restart.
+  async loadPersisted(): Promise<number> {
+    const stored = await this.store.loadAllSessions();
+    for (const s of stored) {
+      const seed = `${this.baseConfig.seed}-${s.token}`;
+      const session = await this.registry.attachFrom(s.env, seed);
+      this.tokens.set(s.setupId, s.token);
+      const occupancy = await this.store.loadOccupancy(s.setupId);
+      for (const o of occupancy) {
+        const seat = session.seats.get(o.seatKey);
+        if (seat) seat.occupant = o.occupant;
+      }
+    }
+    return stored.length;
   }
 
   list(): SessionSummary[] {
@@ -40,6 +71,29 @@ export class SessionService {
 
   registryHandle(): SessionRegistry {
     return this.registry;
+  }
+
+  // Claim a seat and persist the new occupancy.
+  async claimSeat(setupId: string, seatKey: string, humanId: string): Promise<void> {
+    this.registry.claimSeat(setupId, seatKey, humanId);
+    await this.store.saveOccupancy(setupId, seatKey, { kind: "human", id: humanId });
+  }
+
+  // Release a seat and persist the new occupancy.
+  async releaseSeat(setupId: string, seatKey: string, humanId: string): Promise<void> {
+    this.registry.releaseSeat(setupId, seatKey, humanId);
+    const seat = this.get(setupId)?.seats.get(seatKey);
+    if (seat) await this.store.saveOccupancy(setupId, seatKey, seat.occupant);
+  }
+
+  // Record an action in the durable log (human, bot, or system).
+  async recordAction(setupId: string, action: Omit<StoredAction, "seq" | "ts">): Promise<void> {
+    await this.store.appendAction(setupId, action);
+  }
+
+  // The action log for a session.
+  async log(setupId: string): Promise<StoredAction[]> {
+    return this.store.getLog(setupId);
   }
 
   // A short unique token for a new session. Derived from a monotonic counter and the wall clock so it

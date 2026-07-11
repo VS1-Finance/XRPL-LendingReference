@@ -35,8 +35,16 @@ export class SessionRegistry {
     if (existing) return existing;
     const env = loadEnvironment(setupId, dir);
     if (!env) throw new Error(`no session found for ${setupId}`);
+    return this.attachFrom(env, seed);
+  }
+
+  // Attach to a session from an already-loaded environment (for example one read from a database
+  // rather than disk), and register it. Returns the existing handle if it is already live.
+  async attachFrom(env: ProvisionedEnvironment, seed: string): Promise<Session> {
+    const existing = this.sessions.get(env.setupId);
+    if (existing) return existing;
     const session = await attachSession(env, seed);
-    this.sessions.set(setupId, session);
+    this.sessions.set(env.setupId, session);
     return session;
   }
 

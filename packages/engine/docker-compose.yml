@@ -1,0 +1,23 @@
+# A dedicated Postgres for the engine's operational store (sessions, seat occupancy, action log).
+# It runs on 5434 so it never collides with the ingester's history store (default 5432) or other
+# local Postgres instances.
+services:
+  engine-db:
+    image: postgres:16
+    container_name: lending-engine-db
+    environment:
+      POSTGRES_USER: engine
+      POSTGRES_PASSWORD: engine
+      POSTGRES_DB: engine
+    ports:
+      - "5434:5432"
+    volumes:
+      - engine-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U engine -d engine"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  engine-db-data:

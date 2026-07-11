@@ -11,5 +11,6 @@
     { "path": "../ingester" },
     { "path": "../session" }
   ],
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/generated/**"]
 }
