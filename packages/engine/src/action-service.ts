@@ -91,6 +91,17 @@ async function buildTransaction(session: Session, account: string, request: Acti
         CredentialType: encodeCredentialType(p.credentialType ?? session.env.credentialType),
       };
 
+    // Subject action: accept a credential the issuer created. A credential is inert until accepted, so
+    // this is the second half of the two-party handshake — the acting seat accepts the credential the
+    // issuer offered it.
+    case "accept-credential":
+      return {
+        TransactionType: "CredentialAccept",
+        Account: account,
+        Issuer: p.issuer ?? session.env.accounts.issuer.address,
+        CredentialType: encodeCredentialType(p.credentialType ?? session.env.credentialType),
+      };
+
     // Vault-manager actions: adjust vault parameters, or swap the domain's accepted credentials.
     case "set-vault":
       return {

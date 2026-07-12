@@ -33,11 +33,21 @@ export class BotScheduler {
     this.running = false;
   }
 
+  // A seat that submits the same rejection this many times in a row has hit a wall it cannot clear
+  // (e.g. a depositor against a full vault) and stands down for the rest of the run, so it does not
+  // burn rounds — and the ledger — retrying a transaction that will keep failing.
+  private static readonly GIVE_UP_AFTER = 3;
+
   async run(): Promise<void> {
     const log = this.options.log ?? (() => {});
     const interval = (this.options.intervalSeconds ?? 15) * 1000;
     const assignment = this.options.assignment ?? assignAutomatically(this.session, this.options.variants);
     this.running = true;
+
+    // Per-seat record of the last rejection and how many times it has repeated consecutively. A seat
+    // that reaches the give-up threshold is added to `exhausted` and skipped thereafter.
+    const lastReject = new Map<string, { code: string; count: number }>();
+    const exhausted = new Set<string>();
 
     let round = 0;
     while (this.running) {
@@ -45,19 +55,51 @@ export class BotScheduler {
       for (const seat of this.session.seats.values()) {
         if (!this.running) break;
         if (!isBotDriven(seat)) continue; // a human holds this seat — stand down
-        const variant = assignment.get(keyOf(seat));
+        const key = keyOf(seat);
+        if (exhausted.has(key)) continue; // this seat has given up on a repeatedly-failing action
+        const variant = assignment.get(key);
         if (!variant) continue;
         try {
           const outcome = await variant.tick({ session: this.session, seat, log });
           if (outcome.acted) {
-            this.options.onOutcome?.(keyOf(seat), seat.role, outcome.action, outcome.result, outcome.hash);
+            this.options.onOutcome?.(key, seat.role, outcome.action, outcome.result, outcome.hash);
+            // Track consecutive identical rejections; a success clears the streak.
+            if (outcome.result === "tesSUCCESS") {
+              lastReject.delete(key);
+            } else {
+              const prev = lastReject.get(key);
+              const count = prev && prev.code === outcome.result ? prev.count + 1 : 1;
+              lastReject.set(key, { code: outcome.result, count });
+              if (count >= BotScheduler.GIVE_UP_AFTER) {
+                exhausted.add(key);
+                log(`bot ${key} standing down — ${outcome.result} ${count}× in a row`);
+              }
+            }
           }
         } catch (err) {
-          log(`bot ${keyOf(seat)} error: ${err instanceof Error ? err.message : String(err)}`);
+          log(`bot ${key} error: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+      // Stop once the round budget is reached, or once every bot-driven seat has given up.
       if (this.options.maxRounds && round >= this.options.maxRounds) break;
+      if (this.allExhausted(assignment, exhausted)) {
+        log(`all bot seats have stood down — stopping after round ${round}`);
+        break;
+      }
       if (this.running) await sleep(interval);
     }
+  }
+
+  // True when every seat that has a bot variant assigned and is currently bot-driven has stood down,
+  // so there is no more work for the scheduler to do.
+  private allExhausted(assignment: VariantAssignment, exhausted: Set<string>): boolean {
+    let active = 0;
+    for (const seat of this.session.seats.values()) {
+      if (!isBotDriven(seat)) continue;
+      const key = keyOf(seat);
+      if (!assignment.get(key)) continue;
+      if (!exhausted.has(key)) active++;
+    }
+    return active === 0;
   }
 }

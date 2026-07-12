@@ -39,6 +39,10 @@ export class BotService {
       variants: [],
       assignment: assignWeighted(session, this.weights),
       intervalSeconds,
+      // Run a bounded number of rounds — enough for the pool to complete one or two full lifecycles
+      // (deposit, originate, repay or default, withdraw) — then stop, rather than driving the market
+      // forever. Starting the pool again resumes it. Overridable via BOT_MAX_ROUNDS.
+      maxRounds: Number(process.env.BOT_MAX_ROUNDS ?? 20),
       onOutcome: (seatKey, role, action, result, hash) => {
         void this.sessions.recordAction(session.setupId, {
           actor: seatKey,

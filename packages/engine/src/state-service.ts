@@ -7,11 +7,30 @@ export interface SessionState {
   setupId: string;
   vault: { assetsTotal: string; assetsAvailable: string; shareMptId?: string } | null;
   broker: { coverAvailable: string } | null;
-  loans: { loanId: string; borrower: string; principalOutstanding: string; totalOutstanding: string; paymentRemaining: number; defaulted: boolean }[];
+  // Per loan: its balances and status, plus whether it can be defaulted right now and, if not yet,
+  // how many seconds until it can be (past its next payment due date plus grace period).
+  loans: {
+    loanId: string;
+    borrower: string;
+    principalOutstanding: string;
+    totalOutstanding: string;
+    paymentRemaining: number;
+    defaulted: boolean;
+    defaultableNow: boolean;
+    defaultableInSeconds: number | null;
+  }[];
   seats: { key: string; occupant: string; participant?: string }[];
+  // Credential status per participant account, so the UI can tell who still needs to accept a
+  // credential: "accepted" is active, "pending" was issued but not accepted, "none" has no credential.
+  credentials: { address: string; status: "accepted" | "pending" | "none" }[];
 }
 
 const LSF_LOAN_DEFAULTED = 0x00010000;
+const LSF_CREDENTIAL_ACCEPTED = 0x00010000;
+
+// The XRP Ledger epoch (2000-01-01) that ledger time fields are measured from.
+const RIPPLE_EPOCH = 946684800;
+const nowRipple = (): number => Math.floor(Date.now() / 1000) - RIPPLE_EPOCH;
 
 export async function readSessionState(session: Session): Promise<SessionState> {
   const owner = session.env.accounts.owner.address;
@@ -22,15 +41,40 @@ export async function readSessionState(session: Session): Promise<SessionState> 
   for (const b of session.env.accounts.borrowers) {
     const res = await session.client.request({ command: "account_objects", account: b.address, type: "loan", ledger_index: "validated" });
     for (const loan of res.result.account_objects as unknown as Record<string, unknown>[]) {
+      const defaulted = (Number(loan.Flags ?? 0) & LSF_LOAN_DEFAULTED) !== 0;
+      const paymentRemaining = Number(loan.PaymentRemaining ?? 0);
+      // A loan may be defaulted only once its next payment is overdue past the grace period. Compute
+      // whether that moment has passed, and if not, how long until it does.
+      const defaultableAt = Number(loan.NextPaymentDueDate ?? 0) + Number(loan.GracePeriod ?? 0);
+      const secondsUntil = defaultableAt - nowRipple();
+      const defaultableNow = !defaulted && paymentRemaining > 0 && defaultableAt > 0 && secondsUntil <= 0;
       loans.push({
         loanId: String(loan.index),
         borrower: b.address,
         principalOutstanding: readAmount(loan.PrincipalOutstanding),
         totalOutstanding: readAmount(loan.TotalValueOutstanding),
-        paymentRemaining: Number(loan.PaymentRemaining ?? 0),
-        defaulted: (Number(loan.Flags ?? 0) & LSF_LOAN_DEFAULTED) !== 0,
+        paymentRemaining,
+        defaulted,
+        defaultableNow,
+        defaultableInSeconds: defaultableNow || defaulted || paymentRemaining <= 0 ? null : Math.max(0, secondsUntil),
       });
     }
+  }
+
+  // Credential status for each participant that receives one — the depositors and borrowers. The
+  // issuer and owner are provisioned separately and are not domain subjects.
+  const issuer = session.env.accounts.issuer.address;
+  const credentials: SessionState["credentials"] = [];
+  for (const acct of [...session.env.accounts.depositors, ...session.env.accounts.borrowers]) {
+    const res = await session.client.request({ command: "account_objects", account: acct.address, type: "credential", ledger_index: "validated" });
+    const creds = res.result.account_objects as unknown as Record<string, unknown>[];
+    const mine = creds.find((c) => c.Issuer === issuer && c.Subject === acct.address);
+    const status: "accepted" | "pending" | "none" = !mine
+      ? "none"
+      : (Number(mine.Flags ?? 0) & LSF_CREDENTIAL_ACCEPTED) !== 0
+        ? "accepted"
+        : "pending";
+    credentials.push({ address: acct.address, status });
   }
 
   return {
@@ -43,6 +87,7 @@ export async function readSessionState(session: Session): Promise<SessionState> 
       occupant: s.occupant.kind,
       ...(s.occupant.kind === "human" ? { participant: s.occupant.id } : {}),
     })),
+    credentials,
   };
 }
 

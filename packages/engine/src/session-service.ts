@@ -79,8 +79,19 @@ export class SessionService {
     return this.registry;
   }
 
-  // Claim a seat and persist the new occupancy.
+  // Claim a seat and persist the new occupancy. A participant holds one seat at a time, so any other
+  // seat they currently hold is released first — taking a role gives up the previous one.
   async claimSeat(setupId: string, seatKey: string, humanId: string): Promise<void> {
+    const session = this.get(setupId);
+    if (session) {
+      for (const [key, seat] of session.seats) {
+        if (key !== seatKey && seat.occupant.kind === "human" && seat.occupant.id === humanId) {
+          this.registry.releaseSeat(setupId, key, humanId);
+          const released = session.seats.get(key);
+          if (released) await this.store.saveOccupancy(setupId, key, released.occupant);
+        }
+      }
+    }
     this.registry.claimSeat(setupId, seatKey, humanId);
     await this.store.saveOccupancy(setupId, seatKey, { kind: "human", id: humanId });
   }
