@@ -7,6 +7,7 @@ import type { SessionService } from "./session-service.js";
 const BOT_ACTION: Record<string, string> = {
   VaultDeposit: "deposit",
   VaultWithdraw: "withdraw",
+  LoanSet: "originate",
   LoanPay: "repay",
   LoanManage: "manage-loan",
 };

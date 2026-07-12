@@ -1,7 +1,8 @@
-import type { Client } from "xrpl";
+import { signLoanSetByCounterparty, type Client } from "xrpl";
+import { deriveAccount } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { loanNode } from "./reads.js";
+import { loanNode, ownerLoanId } from "./reads.js";
 
 // The XRP Ledger epoch (2000-01-01) that ledger time fields are measured from.
 const RIPPLE_EPOCH = 946684800;
@@ -9,6 +10,54 @@ const nowRipple = (): number => Math.floor(Date.now() / 1000) - RIPPLE_EPOCH;
 
 // tfLoanDefault on LoanManage.
 const TF_LOAN_DEFAULT = 65536;
+
+// The owner behaviour that keeps the lending cycle turning: each round it looks for a borrower without
+// a loan and originates one to it, so the market lends unattended rather than waiting for a human to
+// play originator. Origination is bilateral — the owner and the borrower counter-sign one LoanSet — so
+// this re-derives both wallets from the session seed and combines their signatures, the same path the
+// engine's human origination uses. It originates one loan per tick and stands down once every borrower
+// already has a loan, so it does not over-lend.
+export const loanOriginator = (principal = "10000"): BotVariant => ({
+  role: "owner",
+  name: "loan-originator",
+  async tick(ctx: BotContext): Promise<StepOutcome> {
+    // Find a borrower that has no loan yet.
+    let target: { address: string; index: number } | undefined;
+    for (const b of ctx.session.env.accounts.borrowers) {
+      const existing = await ownerLoanId(ctx.session, b.address);
+      if (!existing) {
+        target = { address: b.address, index: b.index };
+        break;
+      }
+    }
+    if (!target) return idle; // every borrower already has a loan
+
+    const loanSet = {
+      TransactionType: "LoanSet" as const,
+      Account: ctx.seat.address,
+      LoanBrokerID: ctx.session.env.objects.brokerId!,
+      Counterparty: target.address,
+      PrincipalRequested: principal,
+      InterestRate: 50000,
+      PaymentInterval: 60,
+      GracePeriod: 60,
+      LoanOriginationFee: "0",
+    };
+
+    // Two raw signatures on one transaction: the owner signs, the borrower counter-signs. Both wallets
+    // are re-derived from the seed so the signatures bind to the seats' on-chain identities.
+    const ownerWallet = deriveAccount(ctx.session.seed, "owner", ctx.seat.index).wallet;
+    const borrowerWallet = deriveAccount(ctx.session.seed, "borrower", target.index).wallet;
+    const prepared = await ctx.session.client.autofill(loanSet);
+    const ownerSigned = ownerWallet.sign(prepared);
+    const combined = signLoanSetByCounterparty(borrowerWallet, ownerSigned.tx_blob);
+    const res = await ctx.session.client.submitAndWait(combined.tx_blob);
+    const meta = res.result.meta;
+    const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";
+    ctx.log(`owner originate ${principal} to borrower ${target.index} — ${code}`);
+    return { acted: true, action: "LoanSet", result: code, hash: res.result.hash };
+  },
+});
 
 // The broker-side counterpart to the borrower behaviours. Each round the owner seat looks for a loan
 // that is delinquent — past its next-payment due date with a payment still outstanding — and defaults
@@ -33,6 +82,24 @@ export const brokerEnforcer = (): BotVariant => ({
     return { acted: true, action: "LoanManage", result: r.engineResult, hash: r.hash };
   },
 });
+
+// The owner's full behaviour when no human is driving it: each tick it first tries to originate a loan
+// to a borrower that has none, and if every borrower is already lent to, it enforces defaults on any
+// delinquent loan. Together this runs both sides of the owner's role — lending and enforcement — so
+// the whole lifecycle turns unattended.
+export const brokerOwner = (): BotVariant => {
+  const originate = loanOriginator();
+  const enforce = brokerEnforcer();
+  return {
+    role: "owner",
+    name: "broker-owner",
+    async tick(ctx: BotContext): Promise<StepOutcome> {
+      const originated = await originate.tick(ctx);
+      if (originated.acted) return originated;
+      return enforce.tick(ctx);
+    },
+  };
+};
 
 // The loan default flag on a loan object; a loan already carrying it is skipped.
 const LSF_LOAN_DEFAULTED = 0x00010000;

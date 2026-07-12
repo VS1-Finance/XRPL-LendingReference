@@ -2,14 +2,27 @@ import type { FastifyInstance } from "fastify";
 import type { SessionService } from "../session-service.js";
 import { readSessionState } from "../state-service.js";
 
+// The body a session-creation request accepts: a label, pool sizes, and optional overrides onto the
+// base config (asset, broker rates, cover and debt limits). Anything omitted keeps the base value.
+interface ProvisionBody {
+  label?: string;
+  depositors?: number;
+  borrowers?: number;
+  asset?: string;
+  coverRatePercent?: number;
+  liquidationRatePercent?: number;
+  managementFeePercent?: number;
+  coverAmount?: string;
+  debtMaximum?: string;
+}
+
 // Session endpoints: create a session (provision a fresh environment), list sessions, and fetch one
 // session's detail (its seats and who holds each).
 export function registerSessionRoutes(app: FastifyInstance, sessions: SessionService): void {
   // Create a session. An optional label makes it recognizable; provisioning runs on the ledger, so
   // this call takes as long as a full environment provision.
-  app.post<{ Body: { label?: string } }>("/sessions", async (request, reply) => {
-    const label = request.body?.label;
-    const summary = await sessions.create(label);
+  app.post<{ Body: ProvisionBody }>("/sessions", async (request, reply) => {
+    const summary = await sessions.create(request.body ?? {});
     return reply.code(201).send(summary);
   });
 
@@ -17,8 +30,8 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionSer
   // emits a `step` event as it settles (action, result, transaction hash); provisioning ends with a
   // `done` event carrying the session summary, or an `error` event if it fails. This lets a client
   // show the environment being built step by step rather than waiting for one blocking response.
-  app.post<{ Body: { label?: string } }>("/sessions/stream", async (request, reply) => {
-    const label = request.body?.label;
+  app.post<{ Body: ProvisionBody }>("/sessions/stream", async (request, reply) => {
+    const body = request.body ?? {};
 
     reply.raw.writeHead(200, {
       "content-type": "text/event-stream",
@@ -33,7 +46,7 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionSer
     };
 
     try {
-      const summary = await sessions.create(label, (record) => send("step", record));
+      const summary = await sessions.create({ ...body, onStep: (record) => send("step", record) });
       send("done", summary);
     } catch (err) {
       send("error", { error: err instanceof Error ? err.message : String(err) });

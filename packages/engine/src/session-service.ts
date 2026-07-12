@@ -4,6 +4,31 @@ import type { StepRecord } from "@lending/bootstrap";
 import { createSession, SessionRegistry, type Session, type SessionSummary } from "@lending/session";
 import type { EngineStore, StoredAction } from "./store.js";
 
+// The largest pool a single session may request. Each participant is a funded ledger account with
+// trust lines and a credential, so an unbounded pool would ask the faucet and the ledger for far too
+// much; 20 per side keeps a session provisionable in a reasonable time.
+const MAX_POOL = 20;
+
+function clampPool(requested: number | undefined, fallback: number): number {
+  const n = typeof requested === "number" && Number.isFinite(requested) ? Math.round(requested) : fallback;
+  return Math.max(1, Math.min(MAX_POOL, n));
+}
+
+// Rates are stored as scaled integers where 100% is 100000, so a percentage is multiplied by 1000.
+function pctToScaled(percent: number): number {
+  return Math.max(0, Math.round(percent * 1000));
+}
+
+// A vault currency is either a 3-character code used as-is, or any other string encoded as a 40-char
+// hex currency code (the ledger's representation for non-standard currencies).
+function normalizeCurrency(currency: string): string {
+  const c = currency.trim();
+  if (/^[0-9A-Fa-f]{40}$/.test(c)) return c.toUpperCase();
+  if (c.length === 3) return c;
+  const hex = Buffer.from(c, "utf8").toString("hex").toUpperCase();
+  return hex.padEnd(40, "0").slice(0, 40);
+}
+
 // Owns the live sessions the engine serves. It provisions new sessions from the base configuration —
 // each with a unique setup id and derivation seed so they do not collide on-chain — keeps them in the
 // registry for the API to act on, and persists them to the store so they survive a restart. No secret
@@ -20,21 +45,51 @@ export class SessionService {
 
   // Provision a fresh session, register it, and persist it with its initial (all-bot) occupancy. A
   // short label may be supplied to make a session easier to recognize; the on-chain identity is always
-  // unique regardless. An optional onStep sink receives each provisioning step as it settles.
-  async create(label?: string, onStep?: (record: StepRecord) => void): Promise<SessionSummary> {
-    const token = this.uniqueToken(label);
+  // unique regardless. Pool sizes override the base config's, clamped to a sane maximum so a request
+  // cannot ask the ledger to fund an unbounded number of accounts. An optional onStep sink receives
+  // each provisioning step as it settles.
+  async create(opts: {
+    label?: string;
+    depositors?: number;
+    borrowers?: number;
+    // Optional overrides onto the base config. asset is a non-XRP currency code (the harness stands up
+    // its own issuer); the rate fields are percentages (converted to the ledger's scaled integers);
+    // cover and debt are whole-unit decimal strings.
+    asset?: string;
+    coverRatePercent?: number;
+    liquidationRatePercent?: number;
+    managementFeePercent?: number;
+    coverAmount?: string;
+    debtMaximum?: string;
+    onStep?: (record: StepRecord) => void;
+  } = {}): Promise<SessionSummary> {
+    const token = this.uniqueToken(opts.label);
     const config: Config = {
       ...this.baseConfig,
       seed: `${this.baseConfig.seed}-${token}`,
       setupId: `session-${token}`,
+      pool: {
+        depositors: clampPool(opts.depositors, this.baseConfig.pool.depositors),
+        borrowers: clampPool(opts.borrowers, this.baseConfig.pool.borrowers),
+      },
+      // A different vault asset: a non-XRP IOU currency, with the issuer filled in at provision time
+      // from the derived issuer account (issuer omitted here).
+      ...(opts.asset && opts.asset.toUpperCase() !== "XRP"
+        ? { asset: { currency: normalizeCurrency(opts.asset) } }
+        : {}),
+      ...(opts.coverAmount ? { coverAmount: opts.coverAmount } : {}),
+      ...(opts.debtMaximum ? { debtMaximum: opts.debtMaximum } : {}),
+      ...(opts.coverRatePercent !== undefined ? { coverRateMinimum: pctToScaled(opts.coverRatePercent) } : {}),
+      ...(opts.liquidationRatePercent !== undefined ? { coverRateLiquidation: pctToScaled(opts.liquidationRatePercent) } : {}),
+      ...(opts.managementFeePercent !== undefined ? { managementFeeRate: pctToScaled(opts.managementFeePercent) } : {}),
     };
-    const session = await createSession(config, onStep);
+    const session = await createSession(config, opts.onStep);
     this.registry.register(session);
     this.tokens.set(session.setupId, token);
 
     const summary = this.summaryOf(session.setupId)!;
     await this.store.saveSession(
-      { setupId: session.setupId, token, network: session.network, label, env: session.env },
+      { setupId: session.setupId, token, network: session.network, label: opts.label, env: session.env },
       summary.seats.map((s) => ({ seatKey: s.key, occupant: s.occupant })),
     );
     // Record the provisioning steps as the genesis of the session's log, so the Activity view shows
