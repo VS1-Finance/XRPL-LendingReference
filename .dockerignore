@@ -1,0 +1,17 @@
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+out
+.git
+docs
+*.local.json
+.env
+.env.*
+**/.env
+**/.env.*
+.DS_Store
+Dockerfile*
+.dockerignore
+packages/engine/src/generated
+packages/monitoring

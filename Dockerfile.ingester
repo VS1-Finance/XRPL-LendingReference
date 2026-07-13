@@ -1,0 +1,30 @@
+# Production image for the ingester — the ledger-history capture service. It shares the engine's build
+# (same workspace, same install and compile), differing only in what it runs: `ingester follow`, which
+# subscribes to every session the engine has provisioned into the shared directory.
+
+FROM node:22-slim AS base
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && corepack enable && corepack prepare pnpm@10.0.0 --activate
+
+# ---- deps ----
+FROM base AS deps
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.json tsconfig.base.json ./
+COPY packages ./packages
+RUN pnpm install --frozen-lockfile
+
+# ---- build: prisma clients + compile the workspace ----
+FROM deps AS build
+# tsc -b compiles the whole workspace, so both packages' Prisma clients must exist before it runs.
+RUN pnpm --filter @lending/ingester exec prisma generate
+RUN pnpm --filter @lending/engine exec prisma generate
+RUN pnpm exec tsc -b
+
+# ---- run ----
+FROM build AS run
+ENV NODE_ENV=production
+# SESSIONS_DIR is the shared directory the engine writes provisioned session files into.
+ENV SESSIONS_DIR=/app/out
+# Apply migrations, then follow every session in the shared directory.
+CMD ["sh", "-c", "pnpm --filter @lending/ingester exec prisma migrate deploy && pnpm ingester follow --dir \"$SESSIONS_DIR\""]

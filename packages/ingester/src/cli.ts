@@ -1,16 +1,20 @@
 import { db, disconnectDb } from "./db.js";
 import { watchedFromProvisioned } from "./environment.js";
 import { runSubscriber } from "./subscriber.js";
+import { followAll } from "./follow-all.js";
 import { actionsForSetup, stateForSetup, transactionCount } from "./query.js";
 
 const USAGE = `ingester — capture and query a lending environment's history
 
 usage:
-  ingester start --provisioned <file> [--from-ledger <n>] [--once]
-  ingester query --setup-id <id> [--correlation-id <id>] [--state]
+  ingester start  --provisioned <file> [--from-ledger <n>] [--once]
+  ingester follow --dir <dir> [--interval <seconds>]
+  ingester query  --setup-id <id> [--correlation-id <id>] [--state]
 
 options:
   --provisioned <file>   provisioned environment graph (which accounts to watch)
+  --dir <dir>            directory of provisioned session files to follow (the engine's out/)
+  --interval <seconds>   how often to re-scan the directory for new sessions (default 10)
   --from-ledger <n>      backfill from this ledger index instead of the stored cursor
   --once                 backfill and exit instead of holding the live stream open
   --setup-id <id>        the run to query
@@ -49,6 +53,14 @@ async function start(flags: Map<string, string | boolean>): Promise<void> {
   console.log(`captured ${await transactionCount(db(), env.setupId)} transactions for ${env.setupId}`);
 }
 
+async function follow(flags: Map<string, string | boolean>): Promise<void> {
+  const dir = requireString(flags, "dir");
+  const intervalMs =
+    typeof flags.get("interval") === "string" ? Number(flags.get("interval")) * 1000 : undefined;
+  console.log(`following all sessions under ${dir}`);
+  await followAll(db(), { dir, ...(intervalMs ? { intervalMs } : {}), log: (m) => console.log(m) });
+}
+
 async function query(flags: Map<string, string | boolean>): Promise<void> {
   const setupId = requireString(flags, "setup-id");
   if (flags.get("state") === true) {
@@ -72,6 +84,7 @@ async function main(): Promise<void> {
   const [command, rest] = [argv[0], argv.slice(1)];
   try {
     if (command === "start") await start(parseFlags(rest));
+    else if (command === "follow") await follow(parseFlags(rest));
     else if (command === "query") await query(parseFlags(rest));
     else throw new CliError(`unknown command: ${command}`);
   } finally {
