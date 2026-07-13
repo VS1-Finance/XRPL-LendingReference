@@ -14,6 +14,7 @@ interface ProvisionBody {
   managementFeePercent?: number;
   coverAmount?: string;
   debtMaximum?: string;
+  scenario?: string;
 }
 
 // Session endpoints: create a session (provision a fresh environment), list sessions, and fetch one

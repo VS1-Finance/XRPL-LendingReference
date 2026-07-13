@@ -17,6 +17,34 @@ export interface BotWeights {
   depositorWeights: { hold: number; churn: number; topUp: number };
 }
 
+// Bot-behaviour presets selected at session creation. Each biases the variant mix toward a story:
+// "calm" borrowers pay on time and depositors hold; "mixed" spreads across behaviours; and
+// "defaults" weights borrowers toward late payment and default to exercise the loss path. The seed is
+// carried through from the base weights so a scenario stays reproducible.
+export function scenarioWeights(scenario: string, seed: string): BotWeights {
+  switch (scenario) {
+    case "calm":
+      return {
+        seed,
+        borrowerWeights: { onTime: 8, late: 1, early: 2, overpay: 1, default: 0 },
+        depositorWeights: { hold: 6, churn: 1, topUp: 2 },
+      };
+    case "defaults":
+      return {
+        seed,
+        borrowerWeights: { onTime: 1, late: 3, early: 0, overpay: 0, default: 5 },
+        depositorWeights: { hold: 3, churn: 2, topUp: 1 },
+      };
+    case "mixed":
+    default:
+      return {
+        seed,
+        borrowerWeights: { onTime: 5, late: 1, early: 1, overpay: 1, default: 2 },
+        depositorWeights: { hold: 3, churn: 1, topUp: 1 },
+      };
+  }
+}
+
 // Assign each bot-eligible seat a variant drawn from the weighted set for its role, using a seeded
 // generator so the same seed and pool produce the same assignment every run. This is what makes a
 // weighted scenario (for example defaults-heavy) both configurable and reproducible.

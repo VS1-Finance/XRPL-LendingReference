@@ -37,6 +37,8 @@ export class SessionService {
   private readonly registry = new SessionRegistry();
   // The derivation token for each live session, needed to reconstruct the seed when reloading.
   private readonly tokens = new Map<string, string>();
+  // The bot scenario chosen for each session, used to weight the bot pool when it starts.
+  private readonly scenarios = new Map<string, string>();
 
   constructor(
     private readonly baseConfig: Config,
@@ -61,6 +63,8 @@ export class SessionService {
     managementFeePercent?: number;
     coverAmount?: string;
     debtMaximum?: string;
+    // Bot behaviour preset (calm | mixed | defaults), used to weight the pool when it runs.
+    scenario?: string;
     onStep?: (record: StepRecord) => void;
   } = {}): Promise<SessionSummary> {
     const token = this.uniqueToken(opts.label);
@@ -86,6 +90,7 @@ export class SessionService {
     const session = await createSession(config, opts.onStep);
     this.registry.register(session);
     this.tokens.set(session.setupId, token);
+    if (opts.scenario) this.scenarios.set(session.setupId, opts.scenario);
 
     const summary = this.summaryOf(session.setupId)!;
     await this.store.saveSession(
@@ -132,6 +137,11 @@ export class SessionService {
 
   registryHandle(): SessionRegistry {
     return this.registry;
+  }
+
+  // The bot scenario chosen for a session, if any — used to weight the pool when it starts.
+  scenarioFor(setupId: string): string | undefined {
+    return this.scenarios.get(setupId);
   }
 
   // Claim a seat and persist the new occupancy. A participant holds one seat at a time, so any other

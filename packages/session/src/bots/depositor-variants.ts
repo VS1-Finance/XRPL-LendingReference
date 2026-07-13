@@ -1,7 +1,7 @@
 import { decimalToScaled } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { iouAmount, shareBalance } from "./reads.js";
+import { iouAmount, shareBalance, vaultDepositHeadroom } from "./reads.js";
 
 // Vault shares are minted at the vault's scale (6), so a deposit of V asset units mints roughly
 // V * 10^6 share base units. Used to gauge how much a topper has already contributed.
@@ -18,13 +18,16 @@ export const depositWithdrawCycle = (value = "20000"): BotVariant => ({
     const held = await shareBalance(ctx.session.client, ctx.seat.address, shareMptId);
 
     if (held === 0n) {
+      const headroom = await vaultDepositHeadroom(ctx.session);
+      if (headroom < 1) return idle;
+      const amount = Math.min(Number(value), Math.floor(headroom)).toString();
       const r = await ctx.seat.signer.submit({
         TransactionType: "VaultDeposit",
         Account: ctx.seat.address,
         VaultID: ctx.session.env.objects.vaultId!,
-        Amount: iouAmount(ctx.session, value),
+        Amount: iouAmount(ctx.session, amount),
       });
-      ctx.log(`depositor ${ctx.seat.index} cycle-deposit ${value} — ${r.engineResult}`);
+      ctx.log(`depositor ${ctx.seat.index} cycle-deposit ${amount} — ${r.engineResult}`);
       return { acted: true, action: "VaultDeposit", result: r.engineResult, hash: r.hash };
     }
 
@@ -52,13 +55,17 @@ export const topUp = (increment = "5000", targetTotal = "20000"): BotVariant => 
     const targetShares = decimalToScaled(targetTotal, SHARE_SCALE);
     if (held >= targetShares) return idle;
 
+    const headroom = await vaultDepositHeadroom(ctx.session);
+    if (headroom < 1) return idle;
+    const amount = Math.min(Number(increment), Math.floor(headroom)).toString();
+
     const r = await ctx.seat.signer.submit({
       TransactionType: "VaultDeposit",
       Account: ctx.seat.address,
       VaultID: ctx.session.env.objects.vaultId!,
-      Amount: iouAmount(ctx.session, increment),
+      Amount: iouAmount(ctx.session, amount),
     });
-    ctx.log(`depositor ${ctx.seat.index} top-up ${increment} — ${r.engineResult}`);
+    ctx.log(`depositor ${ctx.seat.index} top-up ${amount} — ${r.engineResult}`);
     return { acted: true, action: "VaultDeposit", result: r.engineResult, hash: r.hash };
   },
 });

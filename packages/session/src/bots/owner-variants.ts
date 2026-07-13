@@ -2,7 +2,7 @@ import { signLoanSetByCounterparty, type Client } from "xrpl";
 import { deriveAccount } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { loanNode, ownerLoanId } from "./reads.js";
+import { loanNode, ownerLoanId, maxOriginatable } from "./reads.js";
 
 // The XRP Ledger epoch (2000-01-01) that ledger time fields are measured from.
 const RIPPLE_EPOCH = 946684800;
@@ -32,12 +32,19 @@ export const loanOriginator = (principal = "10000"): BotVariant => ({
     }
     if (!target) return idle; // every borrower already has a loan
 
+    // Only originate what the vault liquidity and broker cover can actually back, so the bot never
+    // submits a loan the ledger will reject for insufficient funds. If there is no headroom, or too
+    // little to be worth a loan, stand down this tick rather than fail.
+    const headroom = await maxOriginatable(ctx.session);
+    if (headroom < 1) return idle;
+    const amount = Math.min(Number(principal), Math.floor(headroom)).toString();
+
     const loanSet = {
       TransactionType: "LoanSet" as const,
       Account: ctx.seat.address,
       LoanBrokerID: ctx.session.env.objects.brokerId!,
       Counterparty: target.address,
-      PrincipalRequested: principal,
+      PrincipalRequested: amount,
       InterestRate: 50000,
       PaymentInterval: 60,
       GracePeriod: 60,
@@ -54,7 +61,7 @@ export const loanOriginator = (principal = "10000"): BotVariant => ({
     const res = await ctx.session.client.submitAndWait(combined.tx_blob);
     const meta = res.result.meta;
     const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";
-    ctx.log(`owner originate ${principal} to borrower ${target.index} — ${code}`);
+    ctx.log(`owner originate ${amount} to borrower ${target.index} — ${code}`);
     return { acted: true, action: "LoanSet", result: code, hash: res.result.hash };
   },
 });

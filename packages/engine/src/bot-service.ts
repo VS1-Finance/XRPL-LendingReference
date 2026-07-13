@@ -1,4 +1,4 @@
-import { BotScheduler, assignWeighted, fillWithBot, type BotWeights } from "@lending/session";
+import { BotScheduler, assignWeighted, scenarioWeights, fillWithBot, type BotWeights } from "@lending/session";
 import type { Session } from "@lending/session";
 import type { SessionService } from "./session-service.js";
 
@@ -29,16 +29,20 @@ export class BotService {
   }
 
   // Start driving a session's bots. A weighted, reproducible variant assignment is drawn from the
-  // configured weights and seed. Starting an already-running session is a no-op.
+  // session's scenario (or the base weights if none was chosen). Starting an already-running session
+  // is a no-op.
   start(session: Session, intervalSeconds: number): void {
     if (this.running.has(session.setupId)) return;
     // Fill every unheld seat with a bot so "start bots" runs the whole market, not only the seats a
     // bot already occupies. Seats a human holds are left untouched; a seat released later goes open
     // again, and a subsequent start re-fills it.
     for (const seat of session.seats.values()) fillWithBot(seat);
+    // A session's scenario preset selects the variant weights; without one, the base weights apply.
+    const scenario = this.sessions.scenarioFor(session.setupId);
+    const weights = scenario ? scenarioWeights(scenario, this.weights.seed) : this.weights;
     const scheduler = new BotScheduler(session, {
       variants: [],
-      assignment: assignWeighted(session, this.weights),
+      assignment: assignWeighted(session, weights),
       intervalSeconds,
       // Run a bounded number of rounds — enough for the pool to complete one or two full lifecycles
       // (deposit, originate, repay or default, withdraw) — then stop, rather than driving the market
