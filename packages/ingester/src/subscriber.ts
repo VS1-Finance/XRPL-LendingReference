@@ -32,7 +32,7 @@ export async function runSubscriber(db: PrismaClient, env: WatchedEnvironment, o
   const client = await connect(env.network);
   try {
     const resumeFrom = options.fromLedger ?? ((await lastLedgerIndex(db, env.setupId)) ?? 0) + 1;
-    log(`backfilling ${env.setupId} from ledger ${resumeFrom}`);
+    log(`backfilling ${env.setupId} from ${resumeFrom > 1 ? `ledger ${resumeFrom}` : "earliest available history"}`);
     await backfill(client, db, env, resumeFrom, log);
 
     if (options.once) return;
@@ -57,13 +57,18 @@ export async function runSubscriber(db: PrismaClient, env: WatchedEnvironment, o
 // watched account is queried; idempotent capture dedupes transactions touching more than one of
 // them.
 async function backfill(client: Client, db: PrismaClient, env: WatchedEnvironment, fromLedger: number, log: (m: string) => void): Promise<void> {
+  // account_tx treats ledger_index_min = -1 as "the earliest ledger the server still has". A resume
+  // cursor below that (for example the 1 used when there is no stored cursor yet) is not a valid
+  // ledger on a live network and is rejected as malformed, so anything at or below 1 means "from the
+  // earliest available history".
+  const minLedger = fromLedger > 1 ? fromLedger : -1;
   for (const account of env.accounts) {
     let marker: unknown = undefined;
     do {
       const res = await client.request({
         command: "account_tx",
         account,
-        ledger_index_min: fromLedger,
+        ledger_index_min: minLedger,
         ledger_index_max: -1,
         forward: true,
         limit: 200,
