@@ -30,6 +30,11 @@ export interface VaultShape {
   isXrp: boolean;
   // A permissioned vault gates access with a domain and per-holder credentials.
   permissioned: boolean;
+  // Number of members (depositors + borrowers) that receive a credential; 0 when not permissioned.
+  // Used to fund the credential issuer for its peak pending-credential count: the batcher submits all
+  // CredentialCreate transactions before any CredentialAccept, so the issuer transiently reserves one
+  // pending credential per member until each accept moves that reserve to the subject.
+  credentialedMembers: number;
 }
 
 // The peak number of reserved owner-count units a role holds over a full lifecycle. This is the ledger's
@@ -48,8 +53,12 @@ function peakObjectCount(role: Role, shape: VaultShape): number {
   const trustLine = shape.isXrp ? 0 : 1;
   switch (role) {
     case "issuer":
-    case "credentialIssuer":
       return 0;
+    case "credentialIssuer":
+      // The batcher creates all credentials before any are accepted, so the issuer transiently
+      // reserves one pending credential per credentialed member until acceptance moves each reserve
+      // to its subject. Peak pending count equals credentialedMembers.
+      return shape.permissioned ? shape.credentialedMembers : 0;
     case "owner":
       // vault (+ its share issuance) + broker (+ its cover) + owner's share MPToken = 5 units, plus the
       // domain and a trust line where they apply. Matches the measured OwnerCount of 7 for IOU permissioned.

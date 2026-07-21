@@ -1,6 +1,7 @@
-import { Client, Wallet, xrpToDrops, dropsToXrp } from "xrpl";
+import { Client, Wallet, xrpToDrops, dropsToXrp, type SubmittableTransaction } from "xrpl";
 import type { DerivedAccount } from "./accounts.js";
 import { withRetry } from "./retry.js";
+import { submitBatch } from "./client.js";
 
 export interface FanOutOptions {
   // The target balance for each account, in integer drops. Holders must actually hold the liquidity
@@ -31,6 +32,7 @@ export async function fanOutFunding(
 ): Promise<FundedAccount[]> {
   const log = options.log ?? (() => {});
   const results: FundedAccount[] = [];
+  const toFund: { account: DerivedAccount; drops: bigint }[] = [];
 
   for (const target of targets) {
     const targetDrops = BigInt(options.dropsForAccount(target));
@@ -38,22 +40,26 @@ export async function fanOutFunding(
     if (balanceDrops >= targetDrops) {
       log(`fund ${target.role}[${target.index}] ${target.address} — already funded, skip`);
       results.push({ account: target, fundedXrp: Number(dropsToXrp(balanceDrops.toString())), alreadyFunded: true });
-      continue;
+    } else {
+      toFund.push({ account: target, drops: targetDrops - balanceDrops });
     }
-
-    const shortfall = targetDrops - balanceDrops;
-    const hash = await withRetry(
-      () => sendXrp(client, treasury, target.address, shortfall.toString()),
-      {
-        retryable: isTransient,
-        onRetry: (err, attempt, delay) =>
-          log(`fund ${target.address} attempt ${attempt} failed (${describe(err)}); retrying in ${delay}ms`),
-      },
-    );
-    log(`fund ${target.role}[${target.index}] ${target.address} — sent ${dropsToXrp(shortfall.toString())} XRP`);
-    results.push({ account: target, fundedXrp: Number(dropsToXrp(targetDrops.toString())), alreadyFunded: false, txHash: hash });
   }
 
+  if (toFund.length > 0) {
+    const items = toFund.map(({ account, drops }) => ({
+      wallet: treasury,
+      tx: { TransactionType: "Payment", Account: treasury.address, Destination: account.address, Amount: drops.toString() } as SubmittableTransaction,
+      ctx: { setupId: "funding", correlationId: `fund-${account.role}-${account.index}` },
+    }));
+    const submitted = await withRetry(() => submitBatch(client, items), {
+      retryable: isTransient,
+      onRetry: (err, attempt, delay) => log(`funding batch attempt ${attempt} failed (${describe(err)}); retrying in ${delay}ms`),
+    });
+    toFund.forEach(({ account, drops }, i) => {
+      log(`fund ${account.role}[${account.index}] ${account.address} — sent ${dropsToXrp(drops.toString())} XRP`);
+      results.push({ account, fundedXrp: Number(dropsToXrp(drops.toString())), alreadyFunded: false, txHash: submitted[i]!.hash });
+    });
+  }
   return results;
 }
 
@@ -105,22 +111,6 @@ export async function fundTreasuryForTargets(
     );
   }
   return treasury;
-}
-
-async function sendXrp(client: Client, from: Wallet, to: string, drops: string): Promise<string> {
-  const prepared = await client.autofill({
-    TransactionType: "Payment",
-    Account: from.address,
-    Destination: to,
-    Amount: drops,
-  });
-  const res = await client.submitAndWait(from.sign(prepared).tx_blob);
-  const meta = res.result.meta;
-  const code = typeof meta === "object" && meta ? meta.TransactionResult : undefined;
-  if (code !== "tesSUCCESS") {
-    throw new Error(`funding payment to ${to} returned ${code ?? "unknown result"}`);
-  }
-  return res.result.hash;
 }
 
 async function accountBalanceDrops(client: Client, address: string): Promise<bigint> {

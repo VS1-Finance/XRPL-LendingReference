@@ -16,13 +16,16 @@ import {
 } from "@lending/shared";
 import { assertCoverMeetsMinimum, assertSingleOwner } from "./assertions.js";
 import {
-  configureIssuer,
+  runBatch,
+  issuerFlagSteps,
+  trustSteps,
+  distributeSteps,
+  credentialCreateSteps,
+  credentialAcceptSteps,
   createBroker,
   createDomain,
   createVault,
   depositCover,
-  distributeAsset,
-  issueCredentials,
 } from "./steps.js";
 import { saveEnvironment } from "./store.js";
 import type { ProvisionedAccount, ProvisionedEnvironment, StepRecord } from "./types.js";
@@ -81,20 +84,30 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
     await fanOutFunding(client, treasury, everyAccount, { dropsForAccount, log });
 
     const deps = { client, config, accounts, setupId, env, log, onStep: options.onStep };
+    const roleLabel = (a: { role: string; index: number }) =>
+      a.role === "owner" ? "owner" : `${a.role}[${a.index}]`;
 
     // Issuer flags and asset distribution only apply to an issued token. A native-XRP vault has no
     // currency issuer, so these steps are skipped — accounts already hold XRP from funding.
     if (!isXrpAsset(config.asset)) {
-      await configureIssuer(deps);
-      await distributeAsset(deps, accounts.owner.wallet, "owner", coverAndLiquidity(config));
-      for (const d of accounts.depositors) await distributeAsset(deps, d.wallet, `depositor[${d.index}]`, liquidityPerHolder(config));
-      for (const b of accounts.borrowers) await distributeAsset(deps, b.wallet, `borrower[${b.index}]`, liquidityPerHolder(config));
+      // Batch 2: issuer flags (chained within the issuer's sequence).
+      await runBatch(deps, issuerFlagSteps(deps));
+      // Batch 3: trust lines (one per holder + owner, all different accounts).
+      const holders = [accounts.owner, ...accounts.depositors, ...accounts.borrowers];
+      await runBatch(deps, holders.flatMap((h) => trustSteps(deps, h.wallet, roleLabel(h))));
+      // Batch 4: distributions (all from the issuer).
+      await runBatch(deps, [
+        ...distributeSteps(deps, accounts.owner.wallet, "owner", coverAndLiquidity(config)),
+        ...accounts.depositors.flatMap((d) => distributeSteps(deps, d.wallet, `depositor[${d.index}]`, liquidityPerHolder(config))),
+        ...accounts.borrowers.flatMap((b) => distributeSteps(deps, b.wallet, `borrower[${b.index}]`, liquidityPerHolder(config))),
+      ]);
     }
 
     // Credentials and the domain are only provisioned for a permissioned vault. A public vault skips
     // both — no credential is issued, no domain is created — so createVault below makes an open vault.
     if (config.domain) {
-      await issueCredentials(deps);
+      await runBatch(deps, credentialCreateSteps(deps));
+      await runBatch(deps, credentialAcceptSteps(deps));
       await createDomain(deps);
     }
     await createVault(deps);
@@ -138,7 +151,11 @@ function liquidityPerHolder(config: Config): string {
 // is in integer drops — the caller sums these across the pool, and rounding to XRP first would let
 // floating-point error accumulate into a value the ledger's drops conversion rejects.
 function fundingPlan(config: Config, rates: ReserveRates): (account: DerivedAccount) => number {
-  const shape: VaultShape = { isXrp: isXrpAsset(config.asset), permissioned: config.domain !== undefined };
+  const shape: VaultShape = {
+    isXrp: isXrpAsset(config.asset),
+    permissioned: config.domain !== undefined,
+    credentialedMembers: config.domain ? config.pool.depositors + config.pool.borrowers : 0,
+  };
   const liquidityDrops = (value: string) => Number(decimalToScaled(value, 6));
   return (account) => {
     const reserve = roleReserveDrops(account.role, shape, rates);
