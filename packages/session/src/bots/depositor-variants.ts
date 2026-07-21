@@ -1,7 +1,7 @@
 import { decimalToScaled } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { assetAmount, shareBalance, vaultDepositHeadroom } from "./reads.js";
+import { assetAmount, depositHeadroom, shareBalance } from "./reads.js";
 
 // Vault shares are minted at the vault's scale (6), so a deposit of V asset units mints roughly
 // V * 10^6 share base units. Used to gauge how much a topper has already contributed.
@@ -18,7 +18,7 @@ export const depositWithdrawCycle = (value = "20000"): BotVariant => ({
     const held = await shareBalance(ctx.session.client, ctx.seat.address, shareMptId);
 
     if (held === 0n) {
-      const headroom = await vaultDepositHeadroom(ctx.session);
+      const headroom = await depositHeadroom(ctx.session, ctx.seat.address);
       if (headroom < 1) return idle;
       const amount = Math.min(Number(value), Math.floor(headroom)).toString();
       const r = await ctx.seat.signer.submit({
@@ -55,7 +55,7 @@ export const topUp = (increment = "5000", targetTotal = "20000"): BotVariant => 
     const targetShares = decimalToScaled(targetTotal, SHARE_SCALE);
     if (held >= targetShares) return idle;
 
-    const headroom = await vaultDepositHeadroom(ctx.session);
+    const headroom = await depositHeadroom(ctx.session, ctx.seat.address);
     if (headroom < 1) return idle;
     const amount = Math.min(Number(increment), Math.floor(headroom)).toString();
 

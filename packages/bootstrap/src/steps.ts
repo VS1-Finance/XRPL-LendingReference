@@ -284,14 +284,17 @@ export async function depositCover(deps: StepDeps): Promise<void> {
     : { currency: deps.config.asset.currency, issuer: deps.accounts.issuer.address, value: deps.config.coverAmount };
 
   // Idempotent on the configured cover amount: a re-run that already holds at least that much
-  // cover skips the deposit instead of stacking a second one.
+  // cover skips the deposit instead of stacking a second one. The on-ledger cover is in the broker's
+  // asset units — drops for XRP — so the configured whole-token amount is converted to match before
+  // comparing, otherwise an XRP broker's drops cover always dwarfs the whole-token threshold.
+  const requiredCover = isXrpAsset(deps.config.asset) ? xrpToDrops(deps.config.coverAmount) : deps.config.coverAmount;
   await step(
     deps,
     "cover-deposit",
     async () => {
       const current = await findBrokerCover(deps.client, owner.address);
       if (current === undefined) return false;
-      return Number(current) >= Number(deps.config.coverAmount);
+      return Number(current) >= Number(requiredCover);
     },
     async (ctx) => {
       const r = await submitOrThrow(

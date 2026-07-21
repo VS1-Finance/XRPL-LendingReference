@@ -1,6 +1,6 @@
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { assetAmount, outstandingToPay, payableLoan, shareBalance, vaultDepositHeadroom } from "./reads.js";
+import { assetAmount, depositHeadroom, outstandingToPay, payableLoan, shareBalance } from "./reads.js";
 
 // A depositor bot that supplies liquidity once and then holds. On each tick it deposits the target
 // amount if it holds no shares yet; once it has shares it does nothing further.
@@ -12,8 +12,9 @@ export const depositAndHold = (targetValue = "20000"): BotVariant => ({
     const held = await shareBalance(ctx.session.client, ctx.seat.address, shareMptId);
     if (held > 0n) return idle;
 
-    // Only deposit what the vault has room for, so a full vault does not draw a rejection every round.
-    const headroom = await vaultDepositHeadroom(ctx.session);
+    // Only deposit what the vault has room for and what the account can afford, so a full vault or a
+    // thinly funded XRP holder does not draw a rejection every round.
+    const headroom = await depositHeadroom(ctx.session, ctx.seat.address);
     if (headroom < 1) return idle;
     const amount = Math.min(Number(targetValue), Math.floor(headroom)).toString();
 

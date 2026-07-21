@@ -218,11 +218,14 @@ function brokerValue(session: Session, value: string): string {
 }
 
 // The credential type for a credential/domain action: the request's explicit value, or the session's
-// configured type. A public vault has no configured type, so a credential action without an explicit
-// one is rejected — there is no credential scheme to act within.
+// configured type. Credential actions only make sense on a permissioned vault, so a public vault (no
+// domain) rejects them outright — a client cannot re-enable them by supplying an explicit type.
 function resolveCredentialType(session: Session, p: Record<string, string>): string {
+  if (session.env.objects.domainId === undefined) {
+    throw new ActionError("this session is a public vault and has no credential scheme", 409);
+  }
   const type = p.credentialType ?? session.env.credentialType;
-  if (!type) throw new ActionError("this session is a public vault and has no credential type", 409);
+  if (!type) throw new ActionError("this session has no credential type configured", 409);
   return type;
 }
 

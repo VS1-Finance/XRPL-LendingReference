@@ -1,13 +1,18 @@
 import {
   type Config,
   type DerivedAccount,
+  type ReserveRates,
+  type VaultShape,
   connect,
+  decimalToScaled,
   deriveAccountSet,
   allAccounts,
   fanOutFunding,
   fundTreasuryForTargets,
   generateSetupId,
   isXrpAsset,
+  readReserveRates,
+  roleReserveDrops,
 } from "@lending/shared";
 import { assertCoverMeetsMinimum, assertSingleOwner } from "./assertions.js";
 import {
@@ -64,19 +69,16 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
   try {
     log(`provisioning ${setupId} on ${config.network}`);
 
-    // Fund every derived account by fanning XRP out from a treasury sized to the whole pool. For an
-    // IOU asset every account gets the flat funding amount (liquidity is minted separately). For an
-    // XRP asset there is no minting — each holder must hold the XRP it will deposit — so the funding
-    // is sized per role to include that liquidity.
+    // Fund every derived account by fanning XRP out from a treasury sized to the whole pool. Each role
+    // is funded for the reserve it will actually need — the base reserve plus the increment for the
+    // objects that role ends up owning — read live from the ledger, rather than a flat amount. For an
+    // XRP vault there is no minting, so a holder is additionally funded for the liquidity it deposits.
+    const reserveRates = await readReserveRates(client);
     const everyAccount = allAccounts(accounts);
-    const xrpForAccount = fundingPlan(config);
-    const totalXrp = everyAccount.reduce((sum, a) => sum + xrpForAccount(a), 0);
-    const treasury = await fundTreasuryForTargets(client, everyAccount.length, totalXrp, log);
-    await fanOutFunding(client, treasury, everyAccount, {
-      xrpPerAccount: config.fundingXrpPerAccount,
-      xrpForAccount,
-      log,
-    });
+    const dropsForAccount = fundingPlan(config, reserveRates);
+    const totalDrops = everyAccount.reduce((sum, a) => sum + dropsForAccount(a), 0);
+    const treasury = await fundTreasuryForTargets(client, everyAccount.length, totalDrops, log);
+    await fanOutFunding(client, treasury, everyAccount, { dropsForAccount, log });
 
     const deps = { client, config, accounts, setupId, env, log, onStep: options.onStep };
 
@@ -127,23 +129,28 @@ function liquidityPerHolder(config: Config): string {
   return config.debtMaximum;
 }
 
-// The XRP each account is funded with. For an IOU asset that is the flat funding amount — liquidity is
-// minted to holders separately, so XRP only backs reserves and fees. For an XRP asset the flat amount
-// is not enough: a holder must actually hold the XRP it deposits and the owner must hold its cover,
-// because there is no minting. So each role is funded with the flat amount plus the liquidity that role
-// moves — mirroring what coverAndLiquidity/liquidityPerHolder would have minted for an IOU.
-function fundingPlan(config: Config): (account: DerivedAccount) => number {
-  const base = config.fundingXrpPerAccount;
-  if (!isXrpAsset(config.asset)) return () => base;
+// The drops each account is funded with. The base is the role's minimum reserve — the base reserve plus
+// the increment for the objects that role will own — read live from the ledger, so an account that owns
+// nothing (the issuer, the credential issuer) is funded minimally rather than bulk-loaded. For an IOU
+// vault that reserve is all an account needs, because liquidity is minted to holders separately. For an
+// XRP vault there is no minting, so a holder is additionally funded for the liquidity it moves: the
+// owner for the cover it seeds, each depositor/borrower for the amount it deposits or repays. Everything
+// is in integer drops — the caller sums these across the pool, and rounding to XRP first would let
+// floating-point error accumulate into a value the ledger's drops conversion rejects.
+function fundingPlan(config: Config, rates: ReserveRates): (account: DerivedAccount) => number {
+  const shape: VaultShape = { isXrp: isXrpAsset(config.asset), permissioned: config.domain !== undefined };
+  const liquidityDrops = (value: string) => Number(decimalToScaled(value, 6));
   return (account) => {
+    const reserve = roleReserveDrops(account.role, shape, rates);
+    if (!shape.isXrp) return reserve; // IOU liquidity is minted, not funded
     switch (account.role) {
       case "owner":
-        return base + Number(coverAndLiquidity(config));
+        return reserve + liquidityDrops(coverAndLiquidity(config));
       case "depositor":
       case "borrower":
-        return base + Number(liquidityPerHolder(config));
+        return reserve + liquidityDrops(liquidityPerHolder(config));
       default:
-        return base; // issuer and credential issuer own no liquidity in an XRP session
+        return reserve; // issuer and credential issuer own no liquidity in an XRP session
     }
   };
 }

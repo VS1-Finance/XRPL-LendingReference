@@ -1,4 +1,5 @@
 import { dropsToXrpString } from "@lending/shared";
+import { isPermissioned } from "@lending/bootstrap";
 import type { Session } from "@lending/session";
 
 // The current state of a session, read live from the validated ledger. This is what the front end
@@ -76,8 +77,8 @@ export async function readSessionState(session: Session): Promise<SessionState> 
   // membership is judged against that account, not the currency issuer.
   const credentialIssuer = session.env.accounts.credentialIssuer?.address;
   const credentials: SessionState["credentials"] = [];
-  const permissioned = session.env.objects.domainId !== undefined && credentialIssuer !== undefined;
-  for (const acct of permissioned ? [...session.env.accounts.depositors, ...session.env.accounts.borrowers] : []) {
+  const subjects = isPermissioned(session.env) && credentialIssuer ? [...session.env.accounts.depositors, ...session.env.accounts.borrowers] : [];
+  for (const acct of subjects) {
     const res = await session.client.request({ command: "account_objects", account: acct.address, type: "credential", ledger_index: "validated" });
     const creds = res.result.account_objects as unknown as Record<string, unknown>[];
     const mine = creds.find((c) => c.Issuer === credentialIssuer && c.Subject === acct.address);

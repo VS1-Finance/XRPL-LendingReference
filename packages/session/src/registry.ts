@@ -1,4 +1,4 @@
-import { loadEnvironment, saveEnvironment, type ProvisionedEnvironment } from "@lending/bootstrap";
+import { isPermissioned, loadEnvironment, saveEnvironment, type ProvisionedEnvironment } from "@lending/bootstrap";
 import { claim, release, type Occupant, type Seat } from "./seat.js";
 import { attachSession, type Session } from "./session.js";
 
@@ -78,8 +78,7 @@ function summarize(session: Session): SessionSummary {
     setupId: session.setupId,
     network: session.network,
     asset: session.env.asset.currency,
-    // A permissioned vault carries a domain; a public vault has none.
-    permissioned: session.env.objects.domainId !== undefined,
+    permissioned: isPermissioned(session.env),
     seats,
     openSeats: seats.filter((s) => s.occupant.kind !== "human").map((s) => s.key),
   };

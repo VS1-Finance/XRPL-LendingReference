@@ -59,8 +59,9 @@ export async function runSuite(options: RunnerOptions): Promise<SuiteResult> {
     }
   }
 
-  // Restore catalogue order.
-  results.sort((a, b) => caseNumber(a.id) - caseNumber(b.id));
+  // Restore catalogue order: group by id prefix (N before P), then by number within each group, so
+  // e.g. P1 does not collide with N1 once both prefixes are in play.
+  results.sort((a, b) => a.id.replace(/\d/g, "").localeCompare(b.id.replace(/\d/g, "")) || caseNumber(a.id) - caseNumber(b.id));
 
   const ran = results.filter((r) => !r.skipped && r.expected.kind !== "deferred").length;
   const passed = results.filter((r) => r.pass && !r.skipped && r.expected.kind !== "deferred").length;

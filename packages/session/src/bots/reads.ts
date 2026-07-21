@@ -124,6 +124,23 @@ export async function vaultDepositHeadroom(session: Session): Promise<number> {
   return max - readWholeTokens(session, vault.AssetsTotal);
 }
 
+// The most a holder can actually deposit right now: the vault's spare room, and for an XRP vault also
+// bounded by what the account can spend without dipping below its reserve. An IOU holder's minted
+// balance always covers its target, so the vault headroom alone applies there; an XRP holder deposits
+// real XRP, so a deposit is never larger than its spendable balance (avoiding a tecUNFUNDED when the
+// configured liquidity is smaller than a bot's target).
+export async function depositHeadroom(session: Session, holder: string): Promise<number> {
+  const vaultRoom = await vaultDepositHeadroom(session);
+  if (!isXrp(session)) return vaultRoom;
+  const info = await session.client.request({ command: "account_info", account: holder, ledger_index: "validated" });
+  const balanceDrops = Number(info.result.account_data.Balance);
+  const ownerCount = Number(info.result.account_data.OwnerCount ?? 0);
+  // Leave the base+owner reserve and a small fee/new-object buffer (2 XRP) untouched.
+  const reserveDrops = 1_000_000 + 200_000 * (ownerCount + 1) + 2_000_000;
+  const spendable = Math.max(0, (balanceDrops - reserveDrops) / 1_000_000);
+  return Math.min(vaultRoom, spendable);
+}
+
 // The largest new loan the broker can currently back, given the vault's available liquidity and the
 // broker's cover headroom at its minimum cover rate. A loan may not exceed the vault's spare assets,
 // and its principal plus existing debt must stay within what the cover supports. Returns 0 when

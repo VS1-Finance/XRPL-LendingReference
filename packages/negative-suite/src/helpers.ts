@@ -7,23 +7,40 @@ export function encodeCredentialType(type: string): string {
   return Buffer.from(type, "utf8").toString("hex").toUpperCase();
 }
 
+// Whether the environment's asset is native XRP rather than an issued token.
+function isXrp(ctx: CaseContext): boolean {
+  return ctx.env.asset.currency === "XRP" && !ctx.env.asset.issuer;
+}
+
 // The environment's asset as an Amount, from a whole-token value. XRP is a bare drops string; an
 // issued asset is a currency/issuer/value object. (Kept named iouAmount for call-site continuity.)
 export function iouAmount(ctx: CaseContext, value: string): Amount {
   const { currency, issuer } = ctx.env.asset;
-  if (currency === "XRP" && !issuer) return xrpToDrops(value);
+  if (isXrp(ctx)) return xrpToDrops(value);
   if (!issuer) throw new Error("issued asset has no issuer in the provisioned graph");
   return { currency, issuer, value };
 }
 
-// Fund a fresh outsider account from the faucet, give it a trust line to the environment's issuer,
-// and distribute some of the asset — so the account is capable of a deposit in every respect except
-// domain membership. Used by the deposit-gating cases to prove the gate is what rejects them.
+// A whole-token value in the broker's asset units as a bare string, for scalar fields like the loan
+// principal: drops for XRP, whole tokens otherwise.
+export function brokerValue(ctx: CaseContext, value: string): string {
+  return isXrp(ctx) ? xrpToDrops(value) : value;
+}
+
+// Fund a fresh outsider account from the faucet and give it the environment's asset — so the account is
+// capable of a deposit in every respect except domain membership. Used by the deposit-gating cases to
+// prove the gate is what rejects them. For an IOU asset that means a trust line and a distribution from
+// the issuer; for an XRP asset the faucet funding is already the asset, so the trust/distribute steps
+// are skipped (an XRP vault has no issuer to trust).
 export async function fundOutsider(ctx: CaseContext, distributeValue = "10000"): Promise<Wallet> {
-  const { wallet } = await withRetry(() => ctx.client.fundWallet(null, { amount: "50" }), {
+  // An XRP outsider needs enough XRP to make the deposit and cover its reserve; an IOU outsider only
+  // needs a small XRP balance for fees, since the asset itself is distributed as an IOU below.
+  const faucetXrp = isXrp(ctx) ? String(Number(distributeValue) + 50) : "50";
+  const { wallet } = await withRetry(() => ctx.client.fundWallet(null, { amount: faucetXrp }), {
     retryable: (e) => /timeout|econn|socket|network|disconnect|rate|429|faucet/i.test(String(e)),
   });
   const asset = ctx.env.asset;
+  if (isXrp(ctx)) return wallet; // XRP is delivered by the faucet; no trust line, no issuer distribution
   const trustCtx: SubmitContext = { setupId: ctx.env.setupId, correlationId: "outsider-trust" };
   await submitOrThrow(ctx.client, wallet, {
     TransactionType: "TrustSet",
@@ -81,7 +98,8 @@ export async function originateLoan(ctx: CaseContext, borrower: Wallet, terms: L
     Account: ctx.wallets.owner.address,
     LoanBrokerID: ctx.env.objects.brokerId!,
     Counterparty: borrower.address,
-    PrincipalRequested: terms.principal,
+    // Principal is in the broker's asset units — drops for XRP, whole tokens otherwise.
+    PrincipalRequested: brokerValue(ctx, terms.principal),
     InterestRate: terms.interestRate,
     PaymentInterval: terms.paymentInterval,
     GracePeriod: terms.gracePeriod,
