@@ -1,4 +1,4 @@
-import { Wallet, signLoanSetByCounterparty } from "xrpl";
+import { Wallet, signLoanSetByCounterparty, xrpToDrops, type Amount } from "xrpl";
 import { buildMemos, submitOrThrow, withRetry, type SubmitContext } from "@lending/shared";
 import type { CaseContext } from "./types.js";
 
@@ -7,10 +7,12 @@ export function encodeCredentialType(type: string): string {
   return Buffer.from(type, "utf8").toString("hex").toUpperCase();
 }
 
-// The environment's asset as an Amount object (all negative-suite environments use an issued asset).
-export function iouAmount(ctx: CaseContext, value: string): { currency: string; issuer: string; value: string } {
+// The environment's asset as an Amount, from a whole-token value. XRP is a bare drops string; an
+// issued asset is a currency/issuer/value object. (Kept named iouAmount for call-site continuity.)
+export function iouAmount(ctx: CaseContext, value: string): Amount {
   const { currency, issuer } = ctx.env.asset;
-  if (!issuer) throw new Error("negative-suite environments must use an issued asset with an issuer");
+  if (currency === "XRP" && !issuer) return xrpToDrops(value);
+  if (!issuer) throw new Error("issued asset has no issuer in the provisioned graph");
   return { currency, issuer, value };
 }
 

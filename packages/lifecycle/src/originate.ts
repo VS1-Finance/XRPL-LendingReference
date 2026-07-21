@@ -1,6 +1,6 @@
 import { correlationId, buildMemos } from "@lending/shared";
 import { signLoanSetByCounterparty, type Client } from "xrpl";
-import { findLoanId, issuedAssetBalance } from "./ledger.js";
+import { brokerValue, findLoanId, issuedAssetBalance } from "./ledger.js";
 import type { LifecycleStep, ProvisionedEnvironment } from "./types.js";
 import type { ResolvedAccount } from "./environment.js";
 
@@ -37,13 +37,13 @@ export async function originate(
   const before = Number(await issuedAssetBalance(client, borrower.account.address, env));
 
   // PrincipalRequested and the fee fields are scalar values in the vault asset's own units (the
-  // asset is implied by the broker's vault), not Amount objects.
+  // asset is implied by the broker's vault), not Amount objects — drops for XRP, whole tokens otherwise.
   const loanSet = {
     TransactionType: "LoanSet" as const,
     Account: owner.account.address,
     LoanBrokerID: brokerId,
     Counterparty: borrower.account.address,
-    PrincipalRequested: terms.principal,
+    PrincipalRequested: brokerValue(env, terms.principal),
     InterestRate: terms.interestRate,
     PaymentInterval: terms.paymentInterval,
     GracePeriod: terms.gracePeriod,

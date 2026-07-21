@@ -6,7 +6,7 @@ import {
   isXrpAsset,
   submitOrThrow,
 } from "@lending/shared";
-import { VaultCreateFlags, VaultWithdrawalPolicy, type Client, type Currency, type Wallet } from "xrpl";
+import { VaultCreateFlags, VaultWithdrawalPolicy, xrpToDrops, type Client, type Currency, type Wallet } from "xrpl";
 import {
   accountHasFlag,
   encodeCredentialType,
@@ -132,9 +132,17 @@ export async function distributeAsset(deps: StepDeps, holder: Wallet, role: stri
   );
 }
 
+// The first accepted credential type from a permissioned config. These steps run only when a domain is
+// configured, so a missing domain here is a programming error rather than a supported path.
+function requireCredentialType(deps: StepDeps): string {
+  const domain = deps.config.domain;
+  if (!domain) throw new Error("credential/domain steps require a configured domain (permissioned vault)");
+  return domain.acceptedCredentials[0]!.credentialType;
+}
+
 export async function issueCredentials(deps: StepDeps): Promise<void> {
   const issuer = deps.accounts.issuer.wallet;
-  const credType = deps.config.domain.acceptedCredentials[0]!.credentialType;
+  const credType = requireCredentialType(deps);
   const credHex = encodeCredentialType(credType);
   const members = [...deps.accounts.depositors, ...deps.accounts.borrowers];
 
@@ -165,7 +173,7 @@ export async function issueCredentials(deps: StepDeps): Promise<void> {
 export async function createDomain(deps: StepDeps): Promise<void> {
   const owner = deps.accounts.owner.wallet;
   const issuer = deps.accounts.issuer.wallet;
-  const credHex = encodeCredentialType(deps.config.domain.acceptedCredentials[0]!.credentialType);
+  const credHex = encodeCredentialType(requireCredentialType(deps));
 
   await step(
     deps,
@@ -186,8 +194,10 @@ export async function createDomain(deps: StepDeps): Promise<void> {
 
 export async function createVault(deps: StepDeps): Promise<void> {
   const owner = deps.accounts.owner.wallet;
+  // A permissioned vault has a domain (created just before this) and is private + domain-gated. A public
+  // vault has no domain: it is created open, so anyone may deposit without a credential.
   const domainId = deps.env.objects.domainId;
-  if (!domainId) throw new Error("cannot create a domain-gated vault before the domain exists");
+  const permissioned = domainId !== undefined;
 
   const asset: Currency = isXrpAsset(deps.config.asset)
     ? { currency: "XRP" }
@@ -198,8 +208,8 @@ export async function createVault(deps: StepDeps): Promise<void> {
     "vault-create",
     async () => (await findVault(deps.client, owner.address)) !== undefined,
     async (ctx) => {
-      // A domain-gated vault must be private; the withdrawal policy is the single value the
-      // ledger exposes today.
+      // A domain-gated vault must be private and carry the DomainID; a public vault carries neither.
+      // The withdrawal policy is the single value the ledger exposes today.
       const r = await submitOrThrow(
         deps.client,
         owner,
@@ -207,8 +217,7 @@ export async function createVault(deps: StepDeps): Promise<void> {
           TransactionType: "VaultCreate",
           Account: owner.address,
           Asset: asset,
-          DomainID: domainId,
-          Flags: VaultCreateFlags.tfVaultPrivate,
+          ...(permissioned ? { DomainID: domainId, Flags: VaultCreateFlags.tfVaultPrivate } : {}),
           WithdrawalPolicy: VaultWithdrawalPolicy.vaultStrategyFirstComeFirstServe,
         },
         ctx,
@@ -240,7 +249,8 @@ export async function createBroker(deps: StepDeps): Promise<void> {
           Account: owner.address,
           VaultID: vaultId,
           ManagementFeeRate: deps.config.managementFeeRate,
-          DebtMaximum: deps.config.debtMaximum,
+          // DebtMaximum is in the broker's asset units — drops for XRP, whole tokens otherwise.
+          DebtMaximum: isXrpAsset(deps.config.asset) ? xrpToDrops(deps.config.debtMaximum) : deps.config.debtMaximum,
           CoverRateMinimum: deps.config.coverRateMinimum,
           CoverRateLiquidation: deps.config.coverRateLiquidation,
         },
@@ -257,8 +267,10 @@ export async function depositCover(deps: StepDeps): Promise<void> {
   const brokerId = deps.env.objects.brokerId;
   if (!brokerId) throw new Error("cannot deposit cover before the broker exists");
 
+  // Cover is deposited in the broker's asset units: drops for XRP, an issued amount otherwise. The
+  // configured coverAmount is a whole-token value, so XRP is converted to drops.
   const amount = isXrpAsset(deps.config.asset)
-    ? deps.config.coverAmount
+    ? xrpToDrops(deps.config.coverAmount)
     : { currency: deps.config.asset.currency, issuer: deps.accounts.issuer.address, value: deps.config.coverAmount };
 
   // Idempotent on the configured cover amount: a re-run that already holds at least that much

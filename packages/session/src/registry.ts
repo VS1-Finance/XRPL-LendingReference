@@ -2,10 +2,15 @@ import { loadEnvironment, saveEnvironment, type ProvisionedEnvironment } from "@
 import { claim, release, type Occupant, type Seat } from "./seat.js";
 import { attachSession, type Session } from "./session.js";
 
-// A view of a session suitable for listing and joining: which seats exist and who holds each.
+// A view of a session suitable for listing and joining: which seats exist and who holds each, plus the
+// vault's shape (asset and whether it is permissioned) so a client can render the right mode.
 export interface SessionSummary {
   setupId: string;
   network: string;
+  // The vault asset: "XRP" for a native vault, or the currency code for an IOU vault.
+  asset: string;
+  // Whether the vault is domain-gated (permissioned) or open (public).
+  permissioned: boolean;
   seats: { key: string; role: string; address: string; occupant: Occupant }[];
   openSeats: string[];
 }
@@ -72,6 +77,9 @@ function summarize(session: Session): SessionSummary {
   return {
     setupId: session.setupId,
     network: session.network,
+    asset: session.env.asset.currency,
+    // A permissioned vault carries a domain; a public vault has none.
+    permissioned: session.env.objects.domainId !== undefined,
     seats,
     openSeats: seats.filter((s) => s.occupant.kind !== "human").map((s) => s.key),
   };

@@ -1,7 +1,6 @@
-import { clampIssuedValueUp } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { iouAmount, payableLoan, shareBalance, vaultDepositHeadroom } from "./reads.js";
+import { assetAmount, outstandingToPay, payableLoan, shareBalance, vaultDepositHeadroom } from "./reads.js";
 
 // A depositor bot that supplies liquidity once and then holds. On each tick it deposits the target
 // amount if it holds no shares yet; once it has shares it does nothing further.
@@ -22,7 +21,7 @@ export const depositAndHold = (targetValue = "20000"): BotVariant => ({
       TransactionType: "VaultDeposit",
       Account: ctx.seat.address,
       VaultID: ctx.session.env.objects.vaultId!,
-      Amount: iouAmount(ctx.session, amount),
+      Amount: assetAmount(ctx.session, amount),
     });
     ctx.log(`depositor ${ctx.seat.index} deposit ${amount} — ${r.engineResult}`);
     return { acted: true, action: "VaultDeposit", result: r.engineResult, hash: r.hash };
@@ -38,12 +37,12 @@ export const repayOnTime = (): BotVariant => ({
     const loan = await payableLoan(ctx.session, ctx.seat.address);
     if (!loan) return idle;
 
-    const due = clampIssuedValueUp(String(loan.TotalValueOutstanding));
+    const due = outstandingToPay(ctx.session, loan.TotalValueOutstanding);
     const r = await ctx.seat.signer.submit({
       TransactionType: "LoanPay",
       Account: ctx.seat.address,
       LoanID: loan.index as string,
-      Amount: iouAmount(ctx.session, due),
+      Amount: assetAmount(ctx.session, due),
     });
     ctx.log(`borrower ${ctx.seat.index} repay ${due} — ${r.engineResult}`);
     return { acted: true, action: "LoanPay", result: r.engineResult, hash: r.hash };

@@ -67,6 +67,8 @@ async function deleteCredentials(
   log: (msg: string) => void,
   ctx: (action: string) => { setupId: string; correlationId: string },
 ): Promise<void> {
+  // A public vault issued no credentials, so there is nothing to remove.
+  if (!env.credentialType) return;
   const credHex = encodeCredentialType(env.credentialType);
   for (const member of [...env.accounts.depositors, ...env.accounts.borrowers]) {
     await tryDelete(log, `credential ${member.role}[${member.index}]`, () =>

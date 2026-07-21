@@ -65,6 +65,9 @@ export class SessionService {
     debtMaximum?: string;
     // Bot behaviour preset (calm | mixed | defaults), used to weight the pool when it runs.
     scenario?: string;
+    // Whether the vault is permissioned (domain-gated, the default) or public (open, no domain and no
+    // credentials). Omit or true → permissioned; false → public.
+    permissioned?: boolean;
     onStep?: (record: StepRecord) => void;
   } = {}): Promise<SessionSummary> {
     const token = this.uniqueToken(opts.label);
@@ -81,6 +84,9 @@ export class SessionService {
       ...(opts.asset && opts.asset.toUpperCase() !== "XRP"
         ? { asset: { currency: normalizeCurrency(opts.asset) } }
         : {}),
+      // A public vault drops the domain entirely — no gate, no credentials. Permissioned keeps the base
+      // config's domain. Explicit false is the only way to opt out; the default stays permissioned.
+      ...(opts.permissioned === false ? { domain: undefined } : {}),
       ...(opts.coverAmount ? { coverAmount: opts.coverAmount } : {}),
       ...(opts.debtMaximum ? { debtMaximum: opts.debtMaximum } : {}),
       ...(opts.coverRatePercent !== undefined ? { coverRateMinimum: pctToScaled(opts.coverRatePercent) } : {}),

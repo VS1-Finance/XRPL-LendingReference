@@ -43,13 +43,18 @@ export const ConfigSchema = z
 
     withdrawalPolicy: WithdrawalPolicySchema.default("first-come-first-serve"),
 
-    domain: z.object({
-      // The ledger caps a domain at 10 accepted credentials.
-      acceptedCredentials: z
-        .array(AcceptedCredentialSchema)
-        .min(1, "a domain needs at least one accepted credential")
-        .max(10, "a domain accepts at most 10 credentials"),
-    }),
+    // Optional. When present, the vault is permissioned: a domain gates access and only holders of an
+    // accepted credential may deposit/borrow (the tecNO_AUTH enforcement story). When omitted, the vault
+    // is public — anyone may deposit without a credential, and no domain or credentials are provisioned.
+    domain: z
+      .object({
+        // The ledger caps a domain at 10 accepted credentials.
+        acceptedCredentials: z
+          .array(AcceptedCredentialSchema)
+          .min(1, "a domain needs at least one accepted credential")
+          .max(10, "a domain accepts at most 10 credentials"),
+      })
+      .optional(),
 
     coverRateMinimum: ScaledRate,
     coverRateLiquidation: ScaledRate,

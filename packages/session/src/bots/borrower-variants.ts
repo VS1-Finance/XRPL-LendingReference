@@ -1,7 +1,6 @@
-import { clampIssuedValueUp } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { iouAmount, payableLoan } from "./reads.js";
+import { assetAmount, outstandingToPay, payableLoan } from "./reads.js";
 
 // The XRP Ledger epoch (2000-01-01) that ledger time fields are measured from.
 const RIPPLE_EPOCH = 946684800;
@@ -19,12 +18,12 @@ export const repayLate = (): BotVariant => ({
     const due = Number(loan.NextPaymentDueDate ?? 0);
     if (due && nowRipple() < due) return idle; // not late yet — hold off until past due
 
-    const amount = clampIssuedValueUp(String(loan.TotalValueOutstanding));
+    const amount = outstandingToPay(ctx.session, loan.TotalValueOutstanding);
     const r = await ctx.seat.signer.submit({
       TransactionType: "LoanPay",
       Account: ctx.seat.address,
       LoanID: loan.index as string,
-      Amount: iouAmount(ctx.session, amount),
+      Amount: assetAmount(ctx.session, amount),
     });
     ctx.log(`borrower ${ctx.seat.index} late repay ${amount} — ${r.engineResult}`);
     return { acted: true, action: "LoanPay", result: r.engineResult, hash: r.hash };
@@ -41,12 +40,14 @@ export const overpay = (extra = "1000"): BotVariant => ({
     const loan = await payableLoan(ctx.session, ctx.seat.address);
     if (!loan) return idle;
 
-    const amount = clampIssuedValueUp(String(Number(loan.TotalValueOutstanding) + Number(extra)));
+    // Pay the full outstanding plus a fixed overpayment. Both are in whole-token units: the outstanding
+    // is normalised out of ledger units first, then the extra is added on top.
+    const amount = String(Number(outstandingToPay(ctx.session, loan.TotalValueOutstanding)) + Number(extra));
     const r = await ctx.seat.signer.submit({
       TransactionType: "LoanPay",
       Account: ctx.seat.address,
       LoanID: loan.index as string,
-      Amount: iouAmount(ctx.session, amount),
+      Amount: assetAmount(ctx.session, amount),
       Flags: TF_LOAN_OVERPAYMENT,
     });
     ctx.log(`borrower ${ctx.seat.index} overpay ${amount} — ${r.engineResult}`);
@@ -63,12 +64,12 @@ export const repayEarly = (): BotVariant => ({
     const loan = await payableLoan(ctx.session, ctx.seat.address);
     if (!loan) return idle;
 
-    const amount = clampIssuedValueUp(String(loan.TotalValueOutstanding));
+    const amount = outstandingToPay(ctx.session, loan.TotalValueOutstanding);
     const r = await ctx.seat.signer.submit({
       TransactionType: "LoanPay",
       Account: ctx.seat.address,
       LoanID: loan.index as string,
-      Amount: iouAmount(ctx.session, amount),
+      Amount: assetAmount(ctx.session, amount),
     });
     ctx.log(`borrower ${ctx.seat.index} early repay ${amount} — ${r.engineResult}`);
     return { acted: true, action: "LoanPay", result: r.engineResult, hash: r.hash };

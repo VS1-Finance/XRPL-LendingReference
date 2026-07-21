@@ -1,5 +1,6 @@
 import {
   type Config,
+  type DerivedAccount,
   connect,
   deriveAccountSet,
   allAccounts,
@@ -46,7 +47,8 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
     asset: isXrpAsset(config.asset)
       ? { currency: "XRP" }
       : { currency: config.asset.currency, issuer: accounts.issuer.address },
-    credentialType: config.domain.acceptedCredentials[0]!.credentialType,
+    // A permissioned vault carries a domain and a credential type; a public vault has neither.
+    ...(config.domain ? { credentialType: config.domain.acceptedCredentials[0]!.credentialType } : {}),
     accounts: {
       issuer: toRecord(accounts.issuer),
       owner: toRecord(accounts.owner),
@@ -61,25 +63,37 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
   try {
     log(`provisioning ${setupId} on ${config.network}`);
 
-    // Fund every derived account by fanning XRP out from a treasury sized to the whole pool.
+    // Fund every derived account by fanning XRP out from a treasury sized to the whole pool. For an
+    // IOU asset every account gets the flat funding amount (liquidity is minted separately). For an
+    // XRP asset there is no minting — each holder must hold the XRP it will deposit — so the funding
+    // is sized per role to include that liquidity.
     const everyAccount = allAccounts(accounts);
-    const treasury = await fundTreasuryForTargets(client, everyAccount.length, config.fundingXrpPerAccount, log);
+    const xrpForAccount = fundingPlan(config);
+    const totalXrp = everyAccount.reduce((sum, a) => sum + xrpForAccount(a), 0);
+    const treasury = await fundTreasuryForTargets(client, everyAccount.length, totalXrp, log);
     await fanOutFunding(client, treasury, everyAccount, {
       xrpPerAccount: config.fundingXrpPerAccount,
+      xrpForAccount,
       log,
     });
 
     const deps = { client, config, accounts, setupId, env, log, onStep: options.onStep };
 
-    await configureIssuer(deps);
+    // Issuer flags and asset distribution only apply to an issued token. A native-XRP vault has no
+    // currency issuer, so these steps are skipped — accounts already hold XRP from funding.
+    if (!isXrpAsset(config.asset)) {
+      await configureIssuer(deps);
+      await distributeAsset(deps, accounts.owner.wallet, "owner", coverAndLiquidity(config));
+      for (const d of accounts.depositors) await distributeAsset(deps, d.wallet, `depositor[${d.index}]`, liquidityPerHolder(config));
+      for (const b of accounts.borrowers) await distributeAsset(deps, b.wallet, `borrower[${b.index}]`, liquidityPerHolder(config));
+    }
 
-    // Owner and every pool member need the asset to fund the vault, cover, and repayments.
-    await distributeAsset(deps, accounts.owner.wallet, "owner", coverAndLiquidity(config));
-    for (const d of accounts.depositors) await distributeAsset(deps, d.wallet, `depositor[${d.index}]`, liquidityPerHolder(config));
-    for (const b of accounts.borrowers) await distributeAsset(deps, b.wallet, `borrower[${b.index}]`, liquidityPerHolder(config));
-
-    await issueCredentials(deps);
-    await createDomain(deps);
+    // Credentials and the domain are only provisioned for a permissioned vault. A public vault skips
+    // both — no credential is issued, no domain is created — so createVault below makes an open vault.
+    if (config.domain) {
+      await issueCredentials(deps);
+      await createDomain(deps);
+    }
     await createVault(deps);
     await createBroker(deps);
 
@@ -110,4 +124,25 @@ function coverAndLiquidity(config: Config): string {
 // Each depositor/borrower receives enough to deposit and repay within the configured debt ceiling.
 function liquidityPerHolder(config: Config): string {
   return config.debtMaximum;
+}
+
+// The XRP each account is funded with. For an IOU asset that is the flat funding amount — liquidity is
+// minted to holders separately, so XRP only backs reserves and fees. For an XRP asset the flat amount
+// is not enough: a holder must actually hold the XRP it deposits and the owner must hold its cover,
+// because there is no minting. So each role is funded with the flat amount plus the liquidity that role
+// moves — mirroring what coverAndLiquidity/liquidityPerHolder would have minted for an IOU.
+function fundingPlan(config: Config): (account: DerivedAccount) => number {
+  const base = config.fundingXrpPerAccount;
+  if (!isXrpAsset(config.asset)) return () => base;
+  return (account) => {
+    switch (account.role) {
+      case "owner":
+        return base + Number(coverAndLiquidity(config));
+      case "depositor":
+      case "borrower":
+        return base + Number(liquidityPerHolder(config));
+      default:
+        return base; // issuer owns no liquidity in an XRP session
+    }
+  };
 }

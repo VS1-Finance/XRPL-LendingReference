@@ -1,7 +1,7 @@
 import { decimalToScaled } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { iouAmount, shareBalance, vaultDepositHeadroom } from "./reads.js";
+import { assetAmount, shareBalance, vaultDepositHeadroom } from "./reads.js";
 
 // Vault shares are minted at the vault's scale (6), so a deposit of V asset units mints roughly
 // V * 10^6 share base units. Used to gauge how much a topper has already contributed.
@@ -25,7 +25,7 @@ export const depositWithdrawCycle = (value = "20000"): BotVariant => ({
         TransactionType: "VaultDeposit",
         Account: ctx.seat.address,
         VaultID: ctx.session.env.objects.vaultId!,
-        Amount: iouAmount(ctx.session, amount),
+        Amount: assetAmount(ctx.session, amount),
       });
       ctx.log(`depositor ${ctx.seat.index} cycle-deposit ${amount} — ${r.engineResult}`);
       return { acted: true, action: "VaultDeposit", result: r.engineResult, hash: r.hash };
@@ -63,7 +63,7 @@ export const topUp = (increment = "5000", targetTotal = "20000"): BotVariant => 
       TransactionType: "VaultDeposit",
       Account: ctx.seat.address,
       VaultID: ctx.session.env.objects.vaultId!,
-      Amount: iouAmount(ctx.session, amount),
+      Amount: assetAmount(ctx.session, amount),
     });
     ctx.log(`depositor ${ctx.seat.index} top-up ${amount} — ${r.engineResult}`);
     return { acted: true, action: "VaultDeposit", result: r.engineResult, hash: r.hash };

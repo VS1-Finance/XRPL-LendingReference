@@ -22,8 +22,9 @@ export interface ProvisionedEnvironment {
   network: string;
   createdAt: string;
   asset: { currency: string; issuer?: string };
-  // The credential type accounts are credentialed with, kept so teardown can remove them.
-  credentialType: string;
+  // The credential type accounts are credentialed with, kept so teardown can remove them. Absent for a
+  // public (non-permissioned) vault, which has no domain, no credentials, and no credential type.
+  credentialType?: string;
   accounts: {
     issuer: ProvisionedAccount;
     owner: ProvisionedAccount;

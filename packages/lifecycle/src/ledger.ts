@@ -1,14 +1,32 @@
-import { clampIssuedValueUp } from "@lending/shared";
-import type { Client } from "xrpl";
+import { clampIssuedValueUp, dropsToXrpString } from "@lending/shared";
+import { xrpToDrops, type Amount, type Client } from "xrpl";
 import type { ProvisionedEnvironment } from "./types.js";
 
-// Build the Amount object for the environment's asset at a given value. For an issued asset the
-// value is clamped to the ledger's 15-significant-digit limit (rounded up so a derived repayment
-// never lands a sub-unit short); for XRP the value is passed through as drops.
-export function assetAmount(env: ProvisionedEnvironment, value: string): string | { currency: string; issuer: string; value: string } {
-  if (env.asset.currency === "XRP") return value;
+// Whether the environment's asset is native XRP rather than an issued token.
+function isXrp(env: ProvisionedEnvironment): boolean {
+  return env.asset.currency === "XRP" && !env.asset.issuer;
+}
+
+// Build the Amount for the environment's asset from a whole-token value. For XRP that is a bare drops
+// string; for an issued asset it is a currency/issuer/value object with the value clamped to the
+// ledger's 15-significant-digit limit (rounded up so a derived repayment never lands a sub-unit short).
+export function assetAmount(env: ProvisionedEnvironment, value: string): Amount {
+  if (isXrp(env)) return xrpToDrops(value);
   if (!env.asset.issuer) throw new Error("issued asset is missing its issuer in the provisioned graph");
   return { currency: env.asset.currency, issuer: env.asset.issuer, value: clampIssuedValueUp(value) };
+}
+
+// Converts an amount read off the ledger (drops for XRP, a decimal token value for IOU) into the
+// whole-token units assetAmount expects. Loan balances come back in ledger units, so a repayment
+// derived from a loan's outstanding balance passes through here first.
+export function ledgerToWhole(env: ProvisionedEnvironment, value: string): string {
+  return isXrp(env) ? dropsToXrpString(value) : value;
+}
+
+// A whole-token value in the broker's asset units as a bare string, for scalar fields like the loan
+// principal that take a plain number rather than a full Amount: drops for XRP, whole tokens otherwise.
+export function brokerValue(env: ProvisionedEnvironment, value: string): string {
+  return isXrp(env) ? xrpToDrops(value) : value;
 }
 
 // The depositor's current share balance, read from the share MPT issued by the vault.

@@ -43,14 +43,18 @@ const N8: NegativeCase = {
   title: "clawback against a non-member",
   guards: "issuer clawback requires an authorized holder",
   expected: { kind: "reject-any", codes: ["tecNO_AUTH", "tecPRECISION_LOSS", "tecNO_PERMISSION", "tecNO_LINE", "tecNO_ENTRY"] },
+  // Clawback is an issued-asset issuer power; XRP has no clawback, so this case applies to IOU vaults.
+  appliesTo: (env) => env.asset.issuer !== undefined,
   async run(ctx) {
     const stranger = (await ctx.client.fundWallet(null, { amount: "50" })).wallet;
+    const { currency, issuer } = ctx.env.asset;
+    if (!issuer) throw new Error("clawback case requires an issued asset");
     return submitExpectReject(ctx, ctx.wallets.issuer, {
       TransactionType: "VaultClawback",
       Account: ctx.wallets.issuer.address,
       VaultID: ctx.env.objects.vaultId!,
       Holder: stranger.address,
-      Amount: iouAmount(ctx, "1000"),
+      Amount: { currency, issuer, value: "1000" },
     }, "N8-clawback");
   },
 };

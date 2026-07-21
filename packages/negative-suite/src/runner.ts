@@ -62,13 +62,20 @@ export async function runSuite(options: RunnerOptions): Promise<SuiteResult> {
   // Restore catalogue order.
   results.sort((a, b) => caseNumber(a.id) - caseNumber(b.id));
 
-  const ran = results.filter((r) => r.expected.kind !== "deferred").length;
-  const passed = results.filter((r) => r.pass && r.expected.kind !== "deferred").length;
-  const deferred = results.filter((r) => r.expected.kind === "deferred").length;
-  return { setupId: `${seed}-base`, network, ran, passed, deferred, results };
+  const ran = results.filter((r) => !r.skipped && r.expected.kind !== "deferred").length;
+  const passed = results.filter((r) => r.pass && !r.skipped && r.expected.kind !== "deferred").length;
+  const deferred = results.filter((r) => !r.skipped && r.expected.kind === "deferred").length;
+  const skipped = results.filter((r) => r.skipped).length;
+  return { setupId: `${seed}-base`, network, ran, passed, deferred, skipped, results };
 }
 
 async function runOne(c: NegativeCase, ctx: CaseContext, log: (m: string) => void): Promise<CaseResult> {
+  // A case that does not apply to this environment (e.g. a domain-gate case against a public vault) is
+  // reported as skipped and not counted — so the same catalogue stays honest across both vault modes.
+  if (c.appliesTo && !c.appliesTo(ctx.env)) {
+    log(`${c.id.padEnd(4)} skip ${c.title} — not applicable to this vault mode`);
+    return { id: c.id, title: c.title, guards: c.guards, expected: c.expected, observed: { code: "SKIPPED" }, pass: true, skipped: true };
+  }
   try {
     const observed = await c.run(ctx);
     const pass = evaluate(c.expected, observed);

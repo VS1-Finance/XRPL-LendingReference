@@ -15,6 +15,8 @@ interface ProvisionBody {
   coverAmount?: string;
   debtMaximum?: string;
   scenario?: string;
+  // Whether the vault is permissioned (domain-gated, default) or public (open). false → public.
+  permissioned?: boolean;
 }
 
 // Session endpoints: create a session (provision a fresh environment), list sessions, and fetch one

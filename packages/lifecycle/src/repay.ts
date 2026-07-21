@@ -1,6 +1,6 @@
 import { correlationId, sleep, submitOrThrow } from "@lending/shared";
 import type { Client } from "xrpl";
-import { assetAmount, readLoan } from "./ledger.js";
+import { assetAmount, ledgerToWhole, readLoan } from "./ledger.js";
 import type { LifecycleStep, ProvisionedEnvironment } from "./types.js";
 import type { ResolvedAccount } from "./environment.js";
 
@@ -40,8 +40,10 @@ export async function repay(
     const remaining = Number(loan.PaymentRemaining ?? 0);
     if (remaining <= 0) return { steps, reachedRepaid: true };
 
-    // On the last installment pay the whole outstanding balance; otherwise the periodic payment.
-    const due = remaining <= 1 ? String(loan.TotalValueOutstanding) : String(loan.PeriodicPayment);
+    // On the last installment pay the whole outstanding balance; otherwise the periodic payment. Both
+    // are read in ledger units (drops for XRP), so they are normalised to whole tokens before assetAmount.
+    const ledgerDue = remaining <= 1 ? String(loan.TotalValueOutstanding) : String(loan.PeriodicPayment);
+    const due = ledgerToWhole(env, ledgerDue);
     installment++;
     const corr = correlationId(env.setupId, `repay-${installment}`);
 
