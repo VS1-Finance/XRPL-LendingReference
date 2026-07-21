@@ -6,6 +6,8 @@ import type { ProvisionedEnvironment } from "@lending/bootstrap";
 // provisioned graph stores only addresses, so the same seed must be supplied to act as them.
 export interface ResolvedWallets {
   issuer: Wallet;
+  // Present only for a permissioned environment: the credential issuer, distinct from the currency issuer.
+  credentialIssuer?: Wallet;
   owner: Wallet;
   depositors: Wallet[];
   borrowers: Wallet[];
@@ -22,6 +24,7 @@ export function resolveWallets(env: ProvisionedEnvironment, seed: string): Resol
 
   return {
     issuer: one("issuer", 0, env.accounts.issuer.address),
+    ...(env.accounts.credentialIssuer ? { credentialIssuer: one("credentialIssuer", 0, env.accounts.credentialIssuer.address) } : {}),
     owner: one("owner", 0, env.accounts.owner.address),
     depositors: env.accounts.depositors.map((a) => one("depositor", a.index, a.address)),
     borrowers: env.accounts.borrowers.map((a) => one("borrower", a.index, a.address)),

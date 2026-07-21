@@ -1,7 +1,7 @@
 import { Wallet } from "xrpl";
 import { submitOrThrow } from "@lending/shared";
 import { submitExpectReject } from "../assert.js";
-import { encodeCredentialType, fundOutsider, iouAmount, issueCredential } from "../helpers.js";
+import { credentialIssuerOf, encodeCredentialType, fundOutsider, iouAmount, issueCredential } from "../helpers.js";
 import type { CaseContext, NegativeCase } from "../types.js";
 
 // N1–N5 guard the deposit-side domain gate: only accounts holding an accepted credential of the
@@ -74,7 +74,8 @@ const N4: NegativeCase = {
     // A second depositor is provisioned for exactly this: revoke it without disturbing the primary.
     const member = ctx.wallets.depositors[1] ?? ctx.wallets.depositors[0]!;
     const credHex = encodeCredentialType(credType(ctx.env));
-    await submitOrThrow(ctx.client, ctx.wallets.issuer, { TransactionType: "CredentialDelete", Account: ctx.wallets.issuer.address, Subject: member.address, CredentialType: credHex }, { setupId: ctx.env.setupId, correlationId: "N4-revoke" });
+    const credentialIssuer = credentialIssuerOf(ctx);
+    await submitOrThrow(ctx.client, credentialIssuer, { TransactionType: "CredentialDelete", Account: credentialIssuer.address, Subject: member.address, CredentialType: credHex }, { setupId: ctx.env.setupId, correlationId: "N4-revoke" });
     return depositAttempt(ctx, member, "N4");
   },
 };

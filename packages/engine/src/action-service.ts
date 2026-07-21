@@ -97,7 +97,7 @@ async function buildTransaction(session: Session, account: string, request: Acti
       return {
         TransactionType: "CredentialAccept",
         Account: account,
-        Issuer: p.issuer ?? session.env.accounts.issuer.address,
+        Issuer: p.issuer ?? resolveCredentialIssuer(session),
         CredentialType: encodeCredentialType(resolveCredentialType(session, p)),
       };
 
@@ -122,7 +122,7 @@ async function buildTransaction(session: Session, account: string, request: Acti
         AcceptedCredentials: [
           {
             Credential: {
-              Issuer: p.issuer ?? session.env.accounts.issuer.address,
+              Issuer: p.issuer ?? resolveCredentialIssuer(session),
               CredentialType: encodeCredentialType(resolveCredentialType(session, p)),
             },
           },
@@ -224,6 +224,14 @@ function resolveCredentialType(session: Session, p: Record<string, string>): str
   const type = p.credentialType ?? session.env.credentialType;
   if (!type) throw new ActionError("this session is a public vault and has no credential type", 409);
   return type;
+}
+
+// The credential issuer's address — the account that grants the session's domain credentials, distinct
+// from the currency issuer. A public vault has none, so a credential action that needs it is rejected.
+function resolveCredentialIssuer(session: Session): string {
+  const address = session.env.accounts.credentialIssuer?.address;
+  if (!address) throw new ActionError("this session is a public vault and has no credential issuer", 409);
+  return address;
 }
 
 function encodeCredentialType(type: string): string {

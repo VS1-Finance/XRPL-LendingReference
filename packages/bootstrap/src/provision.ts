@@ -39,7 +39,7 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
   const now = options.now ?? (() => new Date().toISOString());
   const setupId = config.setupId ?? generateSetupId();
 
-  const accounts = deriveAccountSet(config.seed, config.pool);
+  const accounts = deriveAccountSet(config.seed, config.pool, { permissioned: config.domain !== undefined });
   const env: ProvisionedEnvironment = {
     setupId,
     network: config.network,
@@ -51,6 +51,7 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
     ...(config.domain ? { credentialType: config.domain.acceptedCredentials[0]!.credentialType } : {}),
     accounts: {
       issuer: toRecord(accounts.issuer),
+      ...(accounts.credentialIssuer ? { credentialIssuer: toRecord(accounts.credentialIssuer) } : {}),
       owner: toRecord(accounts.owner),
       depositors: accounts.depositors.map(toRecord),
       borrowers: accounts.borrowers.map(toRecord),
@@ -142,7 +143,7 @@ function fundingPlan(config: Config): (account: DerivedAccount) => number {
       case "borrower":
         return base + Number(liquidityPerHolder(config));
       default:
-        return base; // issuer owns no liquidity in an XRP session
+        return base; // issuer and credential issuer own no liquidity in an XRP session
     }
   };
 }

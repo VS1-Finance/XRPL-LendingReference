@@ -72,13 +72,15 @@ export async function readSessionState(session: Session): Promise<SessionState> 
   // Credential status for each participant that receives one — the depositors and borrowers. The
   // issuer and owner are provisioned separately and are not domain subjects. A public (non-permissioned)
   // vault has no credentials at all, so the list is empty and no per-account lookup is needed.
-  const issuer = session.env.accounts.issuer.address;
+  // Credentials are issued by the credential issuer (present only for a permissioned session), so
+  // membership is judged against that account, not the currency issuer.
+  const credentialIssuer = session.env.accounts.credentialIssuer?.address;
   const credentials: SessionState["credentials"] = [];
-  const permissioned = session.env.objects.domainId !== undefined;
+  const permissioned = session.env.objects.domainId !== undefined && credentialIssuer !== undefined;
   for (const acct of permissioned ? [...session.env.accounts.depositors, ...session.env.accounts.borrowers] : []) {
     const res = await session.client.request({ command: "account_objects", account: acct.address, type: "credential", ledger_index: "validated" });
     const creds = res.result.account_objects as unknown as Record<string, unknown>[];
-    const mine = creds.find((c) => c.Issuer === issuer && c.Subject === acct.address);
+    const mine = creds.find((c) => c.Issuer === credentialIssuer && c.Subject === acct.address);
     const status: "accepted" | "pending" | "none" = !mine
       ? "none"
       : (Number(mine.Flags ?? 0) & LSF_CREDENTIAL_ACCEPTED) !== 0

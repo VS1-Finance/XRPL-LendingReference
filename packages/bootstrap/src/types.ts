@@ -27,6 +27,9 @@ export interface ProvisionedEnvironment {
   credentialType?: string;
   accounts: {
     issuer: ProvisionedAccount;
+    // Present only for a permissioned session — the credential issuer, kept distinct from the currency
+    // issuer so the raw ledger is legible. Absent for a public session.
+    credentialIssuer?: ProvisionedAccount;
     owner: ProvisionedAccount;
     depositors: ProvisionedAccount[];
     borrowers: ProvisionedAccount[];

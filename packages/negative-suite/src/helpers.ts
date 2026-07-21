@@ -41,17 +41,25 @@ export async function fundOutsider(ctx: CaseContext, distributeValue = "10000"):
 
 // Issue a credential of an arbitrary type to a subject and have them accept it — used to give an
 // outsider the *wrong* credential type (accepted, but not the type the domain admits).
+// The recognized credential issuer for a permissioned environment. Credential cases run only when a
+// domain exists, so this is guaranteed present there; a missing one is a programming error.
+export function credentialIssuerOf(ctx: CaseContext): Wallet {
+  if (!ctx.wallets.credentialIssuer) throw new Error("credential case ran against an environment with no credential issuer");
+  return ctx.wallets.credentialIssuer;
+}
+
 export async function issueCredential(ctx: CaseContext, subject: Wallet, credentialTypeHex: string): Promise<void> {
-  await submitOrThrow(ctx.client, ctx.wallets.issuer, {
+  const credentialIssuer = credentialIssuerOf(ctx);
+  await submitOrThrow(ctx.client, credentialIssuer, {
     TransactionType: "CredentialCreate",
-    Account: ctx.wallets.issuer.address,
+    Account: credentialIssuer.address,
     Subject: subject.address,
     CredentialType: credentialTypeHex,
   }, { setupId: ctx.env.setupId, correlationId: "wrong-cred-create" });
   await submitOrThrow(ctx.client, subject, {
     TransactionType: "CredentialAccept",
     Account: subject.address,
-    Issuer: ctx.wallets.issuer.address,
+    Issuer: credentialIssuer.address,
     CredentialType: credentialTypeHex,
   }, { setupId: ctx.env.setupId, correlationId: "wrong-cred-accept" });
 }

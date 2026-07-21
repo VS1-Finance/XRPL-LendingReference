@@ -140,8 +140,16 @@ function requireCredentialType(deps: StepDeps): string {
   return domain.acceptedCredentials[0]!.credentialType;
 }
 
+// The credential issuer's wallet. Credentials are issued by a separate account from the currency issuer,
+// derived only for a permissioned session — so a missing one here is a programming error, same as above.
+function requireCredentialIssuer(deps: StepDeps) {
+  const credentialIssuer = deps.accounts.credentialIssuer;
+  if (!credentialIssuer) throw new Error("credential/domain steps require a credential issuer (permissioned vault)");
+  return credentialIssuer.wallet;
+}
+
 export async function issueCredentials(deps: StepDeps): Promise<void> {
-  const issuer = deps.accounts.issuer.wallet;
+  const issuer = requireCredentialIssuer(deps);
   const credType = requireCredentialType(deps);
   const credHex = encodeCredentialType(credType);
   const members = [...deps.accounts.depositors, ...deps.accounts.borrowers];
@@ -172,7 +180,9 @@ export async function issueCredentials(deps: StepDeps): Promise<void> {
 
 export async function createDomain(deps: StepDeps): Promise<void> {
   const owner = deps.accounts.owner.wallet;
-  const issuer = deps.accounts.issuer.wallet;
+  // The domain accepts credentials from the credential issuer (not the currency issuer), matching what
+  // issueCredentials grants.
+  const issuer = requireCredentialIssuer(deps);
   const credHex = encodeCredentialType(requireCredentialType(deps));
 
   await step(
