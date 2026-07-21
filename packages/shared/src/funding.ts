@@ -1,12 +1,14 @@
-import { Client, Wallet, xrpToDrops, dropsToXrp } from "xrpl";
+import { Client, Wallet, xrpToDrops, dropsToXrp, type SubmittableTransaction } from "xrpl";
 import type { DerivedAccount } from "./accounts.js";
 import { withRetry } from "./retry.js";
+import { submitBatch } from "./client.js";
 
 export interface FanOutOptions {
-  // XRP delivered to each target account that is short of the target balance.
-  xrpPerAccount: number;
-  // Treasury is funded to cover all targets plus headroom for fees and its own reserve. Bounded
-  // by the per-account faucet grant, so very large pools fan out from multiple faucet grants.
+  // The target balance for each account, in integer drops. Holders must actually hold the liquidity
+  // they deposit (there is no free minting), so each role is funded for the reserve it needs plus the
+  // amount it will move. Amounts are drops, not XRP, so that a caller can sum many of them without the
+  // floating-point error that a rounded-XRP value would introduce.
+  dropsForAccount: (account: DerivedAccount) => number;
   log?: (msg: string) => void;
 }
 
@@ -29,30 +31,35 @@ export async function fanOutFunding(
   options: FanOutOptions,
 ): Promise<FundedAccount[]> {
   const log = options.log ?? (() => {});
-  const targetDrops = BigInt(xrpToDrops(options.xrpPerAccount));
   const results: FundedAccount[] = [];
+  const toFund: { account: DerivedAccount; drops: bigint }[] = [];
 
   for (const target of targets) {
+    const targetDrops = BigInt(options.dropsForAccount(target));
     const balanceDrops = await accountBalanceDrops(client, target.address);
     if (balanceDrops >= targetDrops) {
       log(`fund ${target.role}[${target.index}] ${target.address} — already funded, skip`);
       results.push({ account: target, fundedXrp: Number(dropsToXrp(balanceDrops.toString())), alreadyFunded: true });
-      continue;
+    } else {
+      toFund.push({ account: target, drops: targetDrops - balanceDrops });
     }
-
-    const shortfall = targetDrops - balanceDrops;
-    const hash = await withRetry(
-      () => sendXrp(client, treasury, target.address, shortfall.toString()),
-      {
-        retryable: isTransient,
-        onRetry: (err, attempt, delay) =>
-          log(`fund ${target.address} attempt ${attempt} failed (${describe(err)}); retrying in ${delay}ms`),
-      },
-    );
-    log(`fund ${target.role}[${target.index}] ${target.address} — sent ${dropsToXrp(shortfall.toString())} XRP`);
-    results.push({ account: target, fundedXrp: options.xrpPerAccount, alreadyFunded: false, txHash: hash });
   }
 
+  if (toFund.length > 0) {
+    const items = toFund.map(({ account, drops }) => ({
+      wallet: treasury,
+      tx: { TransactionType: "Payment", Account: treasury.address, Destination: account.address, Amount: drops.toString() } as SubmittableTransaction,
+      ctx: { setupId: "funding", correlationId: `fund-${account.role}-${account.index}` },
+    }));
+    const submitted = await withRetry(() => submitBatch(client, items), {
+      retryable: isTransient,
+      onRetry: (err, attempt, delay) => log(`funding batch attempt ${attempt} failed (${describe(err)}); retrying in ${delay}ms`),
+    });
+    toFund.forEach(({ account, drops }, i) => {
+      log(`fund ${account.role}[${account.index}] ${account.address} — sent ${dropsToXrp(drops.toString())} XRP`);
+      results.push({ account, fundedXrp: Number(dropsToXrp(drops.toString())), alreadyFunded: false, txHash: submitted[i]!.hash });
+    });
+  }
   return results;
 }
 
@@ -73,16 +80,20 @@ export async function fundTreasury(client: Client, log: (msg: string) => void = 
 export async function fundTreasuryForTargets(
   client: Client,
   targetCount: number,
-  xrpPerAccount: number,
+  totalDrops: number,
   log: (msg: string) => void = () => {},
 ): Promise<Wallet> {
-  const headroomXrp = 20;
-  const requiredDrops = BigInt(xrpToDrops(targetCount * xrpPerAccount + headroomXrp));
+  const headroomDrops = 20_000_000;
+  const requiredDrops = BigInt(totalDrops + headroomDrops);
   const treasury = await fundTreasury(client, log);
 
   let balance = await accountBalanceDrops(client, treasury.address);
   let grants = 1;
-  const maxGrants = targetCount + 4; // a safety bound so a stuck faucet cannot loop forever
+  // A safety bound so a stuck faucet cannot loop forever; scaled by how many faucet grants the total
+  // could plausibly need. An XRP pool is funded far above the flat per-account amount, and the devnet
+  // faucet grants roughly 100 XRP per request, so size the ceiling against that floor with headroom.
+  const DROPS_PER_GRANT_FLOOR = 100_000_000;
+  const maxGrants = Math.max(targetCount, Math.ceil(totalDrops / DROPS_PER_GRANT_FLOOR)) + 6;
   while (balance < requiredDrops && grants < maxGrants) {
     await withRetry(() => client.fundWallet(treasury), {
       retryable: isTransient,
@@ -96,26 +107,10 @@ export async function fundTreasuryForTargets(
   if (balance < requiredDrops) {
     throw new Error(
       `treasury could not reach ${dropsToXrp(requiredDrops.toString())} XRP after ${grants} faucet grants ` +
-        `(have ${dropsToXrp(balance.toString())}); lower fundingXrpPerAccount or pool size`,
+        `(have ${dropsToXrp(balance.toString())}); lower funding, cover/debt amounts, or pool size`,
     );
   }
   return treasury;
-}
-
-async function sendXrp(client: Client, from: Wallet, to: string, drops: string): Promise<string> {
-  const prepared = await client.autofill({
-    TransactionType: "Payment",
-    Account: from.address,
-    Destination: to,
-    Amount: drops,
-  });
-  const res = await client.submitAndWait(from.sign(prepared).tx_blob);
-  const meta = res.result.meta;
-  const code = typeof meta === "object" && meta ? meta.TransactionResult : undefined;
-  if (code !== "tesSUCCESS") {
-    throw new Error(`funding payment to ${to} returned ${code ?? "unknown result"}`);
-  }
-  return res.result.hash;
 }
 
 async function accountBalanceDrops(client: Client, address: string): Promise<bigint> {

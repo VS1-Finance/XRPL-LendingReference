@@ -2,7 +2,7 @@ import { signLoanSetByCounterparty, type Client } from "xrpl";
 import { deriveAccount } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { loanNode, ownerLoanId, maxOriginatable } from "./reads.js";
+import { brokerValue, loanNode, ownerLoanId, maxOriginatable } from "./reads.js";
 
 // The XRP Ledger epoch (2000-01-01) that ledger time fields are measured from.
 const RIPPLE_EPOCH = 946684800;
@@ -44,7 +44,8 @@ export const loanOriginator = (principal = "10000"): BotVariant => ({
       Account: ctx.seat.address,
       LoanBrokerID: ctx.session.env.objects.brokerId!,
       Counterparty: target.address,
-      PrincipalRequested: amount,
+      // PrincipalRequested is in the broker's asset units — drops for XRP, whole tokens otherwise.
+      PrincipalRequested: brokerValue(ctx.session, amount),
       InterestRate: 50000,
       PaymentInterval: 60,
       GracePeriod: 60,

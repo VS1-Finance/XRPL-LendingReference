@@ -14,7 +14,9 @@ export type WithdrawalPolicy = z.infer<typeof WithdrawalPolicySchema>;
 // A credential a domain will accept: an issuer plus a credential type. The type is given as
 // readable ASCII in config and hex-encoded for the ledger at provision time.
 const AcceptedCredentialSchema = z.object({
-  // Optional: when omitted, the harness uses its own derived issuer account.
+  // Optional and currently informational: the harness always issues credentials from its own derived
+  // credential-issuer account (a separate account from the currency issuer), so a configured issuer here
+  // is not yet honored by provisioning. Kept for forward compatibility.
   issuer: z
     .string()
     .regex(/^r[1-9A-HJ-NP-Za-km-z]{24,34}$/, "must be a classic r-address")
@@ -43,13 +45,18 @@ export const ConfigSchema = z
 
     withdrawalPolicy: WithdrawalPolicySchema.default("first-come-first-serve"),
 
-    domain: z.object({
-      // The ledger caps a domain at 10 accepted credentials.
-      acceptedCredentials: z
-        .array(AcceptedCredentialSchema)
-        .min(1, "a domain needs at least one accepted credential")
-        .max(10, "a domain accepts at most 10 credentials"),
-    }),
+    // Optional. When present, the vault is permissioned: a domain gates access and only holders of an
+    // accepted credential may deposit/borrow (the tecNO_AUTH enforcement story). When omitted, the vault
+    // is public — anyone may deposit without a credential, and no domain or credentials are provisioned.
+    domain: z
+      .object({
+        // The ledger caps a domain at 10 accepted credentials.
+        acceptedCredentials: z
+          .array(AcceptedCredentialSchema)
+          .min(1, "a domain needs at least one accepted credential")
+          .max(10, "a domain accepts at most 10 credentials"),
+      })
+      .optional(),
 
     coverRateMinimum: ScaledRate,
     coverRateLiquidation: ScaledRate,
@@ -67,8 +74,9 @@ export const ConfigSchema = z
       borrowers: z.number().int().min(1),
     }),
 
-    // Per-account XRP funded during fan-out, covering the base reserve, owner reserves for trust
-    // lines and objects, and transaction fees.
+    // Legacy flat per-account funding amount. Funding is now sized per role from the live reserve rates
+    // (see shared/reserves.ts), so this is only a fallback for the fan-out and no longer the primary
+    // driver. Kept for config compatibility.
     fundingXrpPerAccount: z.number().int().positive().default(30),
 
     // Bot-run parameters. Optional: a run without this block uses built-in defaults. The seed makes

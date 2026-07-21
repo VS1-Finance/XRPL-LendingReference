@@ -1,5 +1,12 @@
-import type { Client } from "xrpl";
+import { xrpToDrops, type Amount, type Client } from "xrpl";
+import { clampIssuedValueUp, dropsToXrpString } from "@lending/shared";
 import type { Session } from "../session.js";
+
+// Whether the session asset is native XRP (currency "XRP" with no issuer) rather than an issued token.
+function isXrp(session: Session): boolean {
+  const { currency, issuer } = session.env.asset;
+  return currency === "XRP" && !issuer;
+}
 
 // Small validated-ledger reads used by bot variants to decide whether to act. Kept here so the
 // variants stay strategy-only.
@@ -57,10 +64,28 @@ function readAmount(value: unknown): string {
   return "0";
 }
 
-export function iouAmount(session: Session, value: string): { currency: string; issuer: string; value: string } {
+// Builds a ledger Amount for the session's asset from a whole-token value. For XRP that is a bare drops
+// string; for an issued token it is a currency/issuer/value object. Bots reason in whole-token units
+// everywhere, so this is the single point where those units become a ledger Amount.
+export function assetAmount(session: Session, value: string): Amount {
+  if (isXrp(session)) return xrpToDrops(value);
   const { currency, issuer } = session.env.asset;
   if (!issuer) throw new Error("session asset has no issuer");
   return { currency, issuer, value };
+}
+
+// A whole-token value expressed in the broker's asset units as a bare string, for fields that take a
+// plain number rather than a full Amount (the loan principal): drops for XRP, whole tokens otherwise.
+export function brokerValue(session: Session, value: string): string {
+  return isXrp(session) ? xrpToDrops(value) : value;
+}
+
+// The whole-token amount to repay for a loan, from its on-ledger outstanding balance. XRP balances are
+// integer drops and convert cleanly to whole XRP; issued balances are clamped up to the ledger's
+// 15-significant-digit limit so a derived repayment never falls a sub-unit short of what is owed.
+export function outstandingToPay(session: Session, outstanding: unknown): string {
+  const ledgerValue = readAmount(outstanding);
+  return isXrp(session) ? dropsToXrpString(ledgerValue) : clampIssuedValueUp(ledgerValue);
 }
 
 // Reads a single account object of a given type from the owner's account (the vault and broker both
@@ -81,15 +106,39 @@ function readNumber(value: unknown): number {
   return 0;
 }
 
+// Reads a ledger amount field as a whole-token number. XRP amounts come off the ledger in drops, so
+// they are divided down to whole XRP; issued amounts are already in token units. Used by the headroom
+// reads below so bot arithmetic stays in whole-token space regardless of asset kind.
+function readWholeTokens(session: Session, value: unknown): number {
+  return isXrp(session) ? readNumber(value) / 1_000_000 : readNumber(value);
+}
+
 // The spare capacity a deposit can still fill: the vault's maximum assets minus its current total. A
 // vault with no maximum set has unlimited room. Returns 0 (or less) when the vault is at its cap, so a
 // depositor bot can hold instead of depositing into a full vault (which the ledger rejects).
 export async function vaultDepositHeadroom(session: Session): Promise<number> {
   const vault = await ownerObject(session, "vault");
   if (!vault) return 0;
-  const max = readNumber(vault.AssetsMaximum);
+  const max = readWholeTokens(session, vault.AssetsMaximum);
   if (!max) return Infinity; // no cap configured
-  return max - readNumber(vault.AssetsTotal);
+  return max - readWholeTokens(session, vault.AssetsTotal);
+}
+
+// The most a holder can actually deposit right now: the vault's spare room, and for an XRP vault also
+// bounded by what the account can spend without dipping below its reserve. An IOU holder's minted
+// balance always covers its target, so the vault headroom alone applies there; an XRP holder deposits
+// real XRP, so a deposit is never larger than its spendable balance (avoiding a tecUNFUNDED when the
+// configured liquidity is smaller than a bot's target).
+export async function depositHeadroom(session: Session, holder: string): Promise<number> {
+  const vaultRoom = await vaultDepositHeadroom(session);
+  if (!isXrp(session)) return vaultRoom;
+  const info = await session.client.request({ command: "account_info", account: holder, ledger_index: "validated" });
+  const balanceDrops = Number(info.result.account_data.Balance);
+  const ownerCount = Number(info.result.account_data.OwnerCount ?? 0);
+  // Leave the base+owner reserve and a small fee/new-object buffer (2 XRP) untouched.
+  const reserveDrops = 1_000_000 + 200_000 * (ownerCount + 1) + 2_000_000;
+  const spendable = Math.max(0, (balanceDrops - reserveDrops) / 1_000_000);
+  return Math.min(vaultRoom, spendable);
 }
 
 // The largest new loan the broker can currently back, given the vault's available liquidity and the
@@ -101,10 +150,12 @@ export async function maxOriginatable(session: Session): Promise<number> {
   const broker = await ownerObject(session, "loan_broker");
   if (!vault || !broker) return 0;
 
-  const available = readNumber(vault.AssetsAvailable);
-  const coverAvailable = readNumber(broker.CoverAvailable);
-  const debtTotal = readNumber(broker.DebtTotal);
-  const debtMaximum = readNumber(broker.DebtMaximum);
+  // Asset-denominated fields are read in whole-token units so the result can be compared against the
+  // bot's whole-token target; the cover rate is a scaled integer (100000 = 100%) and stays as-is.
+  const available = readWholeTokens(session, vault.AssetsAvailable);
+  const coverAvailable = readWholeTokens(session, broker.CoverAvailable);
+  const debtTotal = readWholeTokens(session, broker.DebtTotal);
+  const debtMaximum = readWholeTokens(session, broker.DebtMaximum);
   const coverRate = readNumber(broker.CoverRateMinimum) || 100000;
 
   // Debt the cover can support in total, minus what is already lent.

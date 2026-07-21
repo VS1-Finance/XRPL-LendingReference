@@ -22,10 +22,14 @@ export interface ProvisionedEnvironment {
   network: string;
   createdAt: string;
   asset: { currency: string; issuer?: string };
-  // The credential type accounts are credentialed with, kept so teardown can remove them.
-  credentialType: string;
+  // The credential type accounts are credentialed with, kept so teardown can remove them. Absent for a
+  // public (non-permissioned) vault, which has no domain, no credentials, and no credential type.
+  credentialType?: string;
   accounts: {
     issuer: ProvisionedAccount;
+    // Present only for a permissioned session — the credential issuer, kept distinct from the currency
+    // issuer so the raw ledger is legible. Absent for a public session.
+    credentialIssuer?: ProvisionedAccount;
     owner: ProvisionedAccount;
     depositors: ProvisionedAccount[];
     borrowers: ProvisionedAccount[];
@@ -37,4 +41,12 @@ export interface ProvisionedEnvironment {
     brokerId?: string;
   };
   steps: StepRecord[];
+}
+
+// Whether a provisioned session is permissioned (domain-gated) rather than public. The domain object is
+// the on-ledger source of truth — a permissioned session always has one, a public session never does —
+// so every consumer derives the mode from it through this single helper rather than checking assorted
+// fields (credentialType, credentialIssuer) that only happen to travel alongside it.
+export function isPermissioned(env: ProvisionedEnvironment): boolean {
+  return env.objects.domainId !== undefined;
 }

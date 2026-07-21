@@ -33,6 +33,10 @@ export interface NegativeCase {
   // The invariant or protocol property this case guards.
   guards: string;
   expected: Expectation;
+  // Whether this case applies to the provisioned environment. Cases that assert the domain gate
+  // (tecNO_AUTH) apply only to a permissioned vault; public-vault cases apply only when there is no
+  // domain. Absent means the case always applies. A non-applicable case is skipped, not failed.
+  appliesTo?(env: ProvisionedEnvironment): boolean;
   // Run the case's action and report what the ledger did. Setup that a case needs beyond the base
   // environment is performed inside run().
   run(ctx: CaseContext): Promise<Observed>;
@@ -45,6 +49,9 @@ export interface CaseResult {
   expected: Expectation;
   observed: Observed;
   pass: boolean;
+  // A case whose appliesTo returned false for this environment: reported but not run and not counted
+  // as ran/passed. Keeps the suite honest across permissioned and public modes.
+  skipped?: boolean;
 }
 
 export interface SuiteResult {
@@ -53,5 +60,6 @@ export interface SuiteResult {
   ran: number;
   passed: number;
   deferred: number;
+  skipped: number;
   results: CaseResult[];
 }

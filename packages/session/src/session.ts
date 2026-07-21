@@ -55,6 +55,8 @@ function buildSeats(client: Client, env: ProvisionedEnvironment, seed: string): 
   };
 
   add("issuer", env.accounts.issuer.index, env.accounts.issuer.address);
+  // A permissioned session has a separate credential-issuer seat; a public session does not.
+  if (env.accounts.credentialIssuer) add("credentialIssuer", env.accounts.credentialIssuer.index, env.accounts.credentialIssuer.address);
   add("owner", env.accounts.owner.index, env.accounts.owner.address);
   for (const d of env.accounts.depositors) add("depositor", d.index, d.address);
   for (const b of env.accounts.borrowers) add("borrower", b.index, b.address);

@@ -15,6 +15,7 @@ interface ProvisionedFile {
   objects?: { shareMptId?: string };
   accounts: {
     issuer: { address: string };
+    credentialIssuer?: { address: string };
     owner: { address: string };
     depositors: { address: string }[];
     borrowers: { address: string }[];
@@ -31,6 +32,7 @@ export function watchedFromProvisioned(path: string): WatchedEnvironment {
 
   const accounts = [
     file.accounts.issuer.address,
+    ...(file.accounts.credentialIssuer ? [file.accounts.credentialIssuer.address] : []),
     file.accounts.owner.address,
     ...file.accounts.depositors.map((a) => a.address),
     ...file.accounts.borrowers.map((a) => a.address),

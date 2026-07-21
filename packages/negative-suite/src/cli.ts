@@ -38,7 +38,11 @@ async function run(argv: string[]): Promise<void> {
   const result = await runSuite({ config, ...(only ? { only } : {}), log: (m) => console.log(m) });
 
   const path = saveResults(result, flags.get("out-dir"));
-  console.log(`\n${result.passed}/${result.ran} cases passed${result.deferred ? `, ${result.deferred} deferred` : ""}`);
+  console.log(
+    `\n${result.passed}/${result.ran} cases passed` +
+      `${result.deferred ? `, ${result.deferred} deferred` : ""}` +
+      `${result.skipped ? `, ${result.skipped} skipped (not applicable to this vault mode)` : ""}`,
+  );
   console.log(`wrote ${path}`);
   if (result.passed !== result.ran) process.exitCode = 1;
 }

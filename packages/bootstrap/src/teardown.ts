@@ -29,7 +29,8 @@ export async function teardown(setupId: string, options: TeardownOptions): Promi
 
   const network = options.network ?? (env.network as Network);
   const owner = deriveAccount(options.seed, "owner", 0).wallet;
-  const issuer = deriveAccount(options.seed, "issuer", 0).wallet;
+  // Credentials are removed by the credential issuer that granted them (a permissioned session only).
+  const credentialIssuer = deriveAccount(options.seed, "credentialIssuer", 0).wallet;
 
   const client = await connect(network);
   try {
@@ -51,7 +52,7 @@ export async function teardown(setupId: string, options: TeardownOptions): Promi
       );
     }
 
-    await deleteCredentials(client, issuer, env, log, ctx);
+    await deleteCredentials(client, credentialIssuer, env, log, ctx);
 
     deleteEnvironment(setupId, options.outDir);
     log(`removed stored environment for ${setupId}`);
@@ -67,6 +68,8 @@ async function deleteCredentials(
   log: (msg: string) => void,
   ctx: (action: string) => { setupId: string; correlationId: string },
 ): Promise<void> {
+  // A public vault issued no credentials, so there is nothing to remove.
+  if (!env.credentialType) return;
   const credHex = encodeCredentialType(env.credentialType);
   for (const member of [...env.accounts.depositors, ...env.accounts.borrowers]) {
     await tryDelete(log, `credential ${member.role}[${member.index}]`, () =>

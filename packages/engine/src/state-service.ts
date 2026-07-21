@@ -1,3 +1,5 @@
+import { dropsToXrpString } from "@lending/shared";
+import { isPermissioned } from "@lending/bootstrap";
 import type { Session } from "@lending/session";
 
 // The current state of a session, read live from the validated ledger. This is what the front end
@@ -33,6 +35,13 @@ const RIPPLE_EPOCH = 946684800;
 const nowRipple = (): number => Math.floor(Date.now() / 1000) - RIPPLE_EPOCH;
 
 export async function readSessionState(session: Session): Promise<SessionState> {
+  // Whether the session asset is native XRP, so on-ledger drops amounts can be shown as whole XRP.
+  const isXrp = session.env.asset.currency === "XRP" && !session.env.asset.issuer;
+  // An asset-denominated ledger amount as a whole-token string. XRP fields come off the ledger in
+  // drops and are divided down to whole XRP; issued amounts are already in token units. This keeps
+  // the state the front end renders consistent across both asset kinds.
+  const assetValue = (v: unknown): string => (isXrp ? dropsToXrpString(readAmount(v)) : readAmount(v));
+
   const owner = session.env.accounts.owner.address;
   const vault = await firstObject(session, owner, "vault");
   const broker = await firstObject(session, owner, "loan_broker");
@@ -51,8 +60,8 @@ export async function readSessionState(session: Session): Promise<SessionState> 
       loans.push({
         loanId: String(loan.index),
         borrower: b.address,
-        principalOutstanding: readAmount(loan.PrincipalOutstanding),
-        totalOutstanding: readAmount(loan.TotalValueOutstanding),
+        principalOutstanding: assetValue(loan.PrincipalOutstanding),
+        totalOutstanding: assetValue(loan.TotalValueOutstanding),
         paymentRemaining,
         defaulted,
         defaultableNow,
@@ -62,13 +71,17 @@ export async function readSessionState(session: Session): Promise<SessionState> 
   }
 
   // Credential status for each participant that receives one — the depositors and borrowers. The
-  // issuer and owner are provisioned separately and are not domain subjects.
-  const issuer = session.env.accounts.issuer.address;
+  // issuer and owner are provisioned separately and are not domain subjects. A public (non-permissioned)
+  // vault has no credentials at all, so the list is empty and no per-account lookup is needed.
+  // Credentials are issued by the credential issuer (present only for a permissioned session), so
+  // membership is judged against that account, not the currency issuer.
+  const credentialIssuer = session.env.accounts.credentialIssuer?.address;
   const credentials: SessionState["credentials"] = [];
-  for (const acct of [...session.env.accounts.depositors, ...session.env.accounts.borrowers]) {
+  const subjects = isPermissioned(session.env) && credentialIssuer ? [...session.env.accounts.depositors, ...session.env.accounts.borrowers] : [];
+  for (const acct of subjects) {
     const res = await session.client.request({ command: "account_objects", account: acct.address, type: "credential", ledger_index: "validated" });
     const creds = res.result.account_objects as unknown as Record<string, unknown>[];
-    const mine = creds.find((c) => c.Issuer === issuer && c.Subject === acct.address);
+    const mine = creds.find((c) => c.Issuer === credentialIssuer && c.Subject === acct.address);
     const status: "accepted" | "pending" | "none" = !mine
       ? "none"
       : (Number(mine.Flags ?? 0) & LSF_CREDENTIAL_ACCEPTED) !== 0
@@ -79,8 +92,8 @@ export async function readSessionState(session: Session): Promise<SessionState> 
 
   return {
     setupId: session.setupId,
-    vault: vault ? { assetsTotal: readAmount(vault.AssetsTotal), assetsAvailable: readAmount(vault.AssetsAvailable), ...(session.env.objects.shareMptId ? { shareMptId: session.env.objects.shareMptId } : {}) } : null,
-    broker: broker ? { coverAvailable: readAmount(broker.CoverAvailable) } : null,
+    vault: vault ? { assetsTotal: assetValue(vault.AssetsTotal), assetsAvailable: assetValue(vault.AssetsAvailable), ...(session.env.objects.shareMptId ? { shareMptId: session.env.objects.shareMptId } : {}) } : null,
+    broker: broker ? { coverAvailable: assetValue(broker.CoverAvailable) } : null,
     loans,
     seats: [...session.seats.values()].map((s) => ({
       key: `${s.role}:${s.index}`,

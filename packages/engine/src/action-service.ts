@@ -1,5 +1,5 @@
-import { signLoanSetByCounterparty } from "xrpl";
-import type { SubmittableTransaction } from "xrpl";
+import { signLoanSetByCounterparty, xrpToDrops } from "xrpl";
+import type { Amount, SubmittableTransaction } from "xrpl";
 import { clampIssuedValueUp, deriveAccount } from "@lending/shared";
 import type { Session } from "@lending/session";
 
@@ -45,7 +45,6 @@ export async function dispatchAction(session: Session, request: ActionRequest, p
 
 async function buildTransaction(session: Session, account: string, request: ActionRequest): Promise<SubmittableTransaction> {
   const p = request.params ?? {};
-  const asset = issuedAsset(session);
 
   switch (request.action) {
     case "deposit":
@@ -53,7 +52,7 @@ async function buildTransaction(session: Session, account: string, request: Acti
         TransactionType: "VaultDeposit",
         Account: account,
         VaultID: session.env.objects.vaultId!,
-        Amount: { ...asset, value: required(p, "amount") },
+        Amount: assetAmount(session, required(p, "amount")),
       };
 
     case "withdraw":
@@ -61,7 +60,7 @@ async function buildTransaction(session: Session, account: string, request: Acti
         TransactionType: "VaultWithdraw",
         Account: account,
         VaultID: session.env.objects.vaultId!,
-        Amount: { ...asset, value: required(p, "amount") },
+        Amount: assetAmount(session, required(p, "amount")),
       };
 
     case "repay": {
@@ -70,7 +69,7 @@ async function buildTransaction(session: Session, account: string, request: Acti
         TransactionType: "LoanPay",
         Account: account,
         LoanID: loanId,
-        Amount: { ...asset, value: clampIssuedValueUp(required(p, "amount")) },
+        Amount: assetAmount(session, clampIssuedValueUp(required(p, "amount"))),
       };
     }
 
@@ -80,7 +79,7 @@ async function buildTransaction(session: Session, account: string, request: Acti
         TransactionType: "CredentialCreate",
         Account: account,
         Subject: required(p, "subject"),
-        CredentialType: encodeCredentialType(p.credentialType ?? session.env.credentialType),
+        CredentialType: encodeCredentialType(resolveCredentialType(session, p)),
       };
 
     case "revoke-credential":
@@ -88,7 +87,7 @@ async function buildTransaction(session: Session, account: string, request: Acti
         TransactionType: "CredentialDelete",
         Account: account,
         Subject: required(p, "subject"),
-        CredentialType: encodeCredentialType(p.credentialType ?? session.env.credentialType),
+        CredentialType: encodeCredentialType(resolveCredentialType(session, p)),
       };
 
     // Subject action: accept a credential the issuer created. A credential is inert until accepted, so
@@ -98,8 +97,8 @@ async function buildTransaction(session: Session, account: string, request: Acti
       return {
         TransactionType: "CredentialAccept",
         Account: account,
-        Issuer: p.issuer ?? session.env.accounts.issuer.address,
-        CredentialType: encodeCredentialType(p.credentialType ?? session.env.credentialType),
+        Issuer: p.issuer ?? resolveCredentialIssuer(session),
+        CredentialType: encodeCredentialType(resolveCredentialType(session, p)),
       };
 
     // Vault-manager actions: adjust vault parameters, or swap the domain's accepted credentials.
@@ -108,23 +107,28 @@ async function buildTransaction(session: Session, account: string, request: Acti
         TransactionType: "VaultSet",
         Account: account,
         VaultID: session.env.objects.vaultId!,
-        ...(p.assetsMaximum ? { AssetsMaximum: p.assetsMaximum } : {}),
+        // AssetsMaximum is in vault asset units — drops for XRP, whole tokens otherwise.
+        ...(p.assetsMaximum ? { AssetsMaximum: brokerValue(session, p.assetsMaximum) } : {}),
       };
 
-    case "set-domain":
+    case "set-domain": {
+      // Swapping the accepted credentials only makes sense for a permissioned vault, which has a domain.
+      const domainId = session.env.objects.domainId;
+      if (!domainId) throw new ActionError("this session is a public vault and has no domain to configure", 409);
       return {
         TransactionType: "PermissionedDomainSet",
         Account: account,
-        DomainID: session.env.objects.domainId!,
+        DomainID: domainId,
         AcceptedCredentials: [
           {
             Credential: {
-              Issuer: p.issuer ?? session.env.accounts.issuer.address,
-              CredentialType: encodeCredentialType(p.credentialType ?? session.env.credentialType),
+              Issuer: p.issuer ?? resolveCredentialIssuer(session),
+              CredentialType: encodeCredentialType(resolveCredentialType(session, p)),
             },
           },
         ],
       };
+    }
 
     // Loan-originator action: default a delinquent loan. The owner does by hand what the
     // broker-enforcer bot does each round — set tfLoanDefault on a named loan.
@@ -143,7 +147,7 @@ async function buildTransaction(session: Session, account: string, request: Acti
         TransactionType: "LoanBrokerCoverDeposit",
         Account: account,
         LoanBrokerID: session.env.objects.brokerId!,
-        Amount: { ...asset, value: required(p, "amount") },
+        Amount: assetAmount(session, required(p, "amount")),
       };
 
     default:
@@ -168,7 +172,8 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
     Account: owner.address,
     LoanBrokerID: session.env.objects.brokerId!,
     Counterparty: borrowerSeat.address,
-    PrincipalRequested: required(params, "principal"),
+    // The principal is in the broker's asset units — drops for XRP, whole tokens otherwise.
+    PrincipalRequested: brokerValue(session, required(params, "principal")),
     InterestRate: Number(params.interestRate ?? 50000),
     PaymentInterval: Number(params.interval ?? 60),
     GracePeriod: Number(params.grace ?? 60),
@@ -190,10 +195,46 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
   return { action: "originate", code, hash: res.result.hash };
 }
 
-function issuedAsset(session: Session): { currency: string; issuer: string } {
+// Whether the vault asset is native XRP (currency "XRP" with no issuer) rather than an issued token.
+function isXrp(session: Session): boolean {
   const { currency, issuer } = session.env.asset;
-  if (!issuer) throw new ActionError("session asset has no issuer", 500);
-  return { currency, issuer };
+  return currency === "XRP" && !issuer;
+}
+
+// Builds a ledger Amount for the session's asset from a whole-token value. For XRP that is a bare drops
+// string; for an issued token it is a currency/issuer/value object. Every action that carries an amount
+// goes through this, so both asset kinds are handled in one place.
+function assetAmount(session: Session, value: string): Amount {
+  if (isXrp(session)) return xrpToDrops(value);
+  const { currency, issuer } = session.env.asset;
+  if (!issuer) throw new ActionError("issued asset has no issuer", 500);
+  return { currency, issuer, value };
+}
+
+// A bare numeric value in the broker's asset units, for fields (loan principal, debt max) that take a
+// plain number rather than a full Amount: drops for XRP, whole tokens otherwise.
+function brokerValue(session: Session, value: string): string {
+  return isXrp(session) ? xrpToDrops(value) : value;
+}
+
+// The credential type for a credential/domain action: the request's explicit value, or the session's
+// configured type. Credential actions only make sense on a permissioned vault, so a public vault (no
+// domain) rejects them outright — a client cannot re-enable them by supplying an explicit type.
+function resolveCredentialType(session: Session, p: Record<string, string>): string {
+  if (session.env.objects.domainId === undefined) {
+    throw new ActionError("this session is a public vault and has no credential scheme", 409);
+  }
+  const type = p.credentialType ?? session.env.credentialType;
+  if (!type) throw new ActionError("this session has no credential type configured", 409);
+  return type;
+}
+
+// The credential issuer's address — the account that grants the session's domain credentials, distinct
+// from the currency issuer. A public vault has none, so a credential action that needs it is rejected.
+function resolveCredentialIssuer(session: Session): string {
+  const address = session.env.accounts.credentialIssuer?.address;
+  if (!address) throw new ActionError("this session is a public vault and has no credential issuer", 409);
+  return address;
 }
 
 function encodeCredentialType(type: string): string {
