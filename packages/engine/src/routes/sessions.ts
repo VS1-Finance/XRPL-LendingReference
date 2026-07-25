@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { SessionService } from "../session-service.js";
 import { readSessionState } from "../state-service.js";
+import { readBalances } from "../balances-service.js";
 
 // The body a session-creation request accepts: a label, pool sizes, and optional overrides onto the
 // base config (asset, broker rates, cover and debt limits). Anything omitted keeps the base value.
@@ -74,6 +75,14 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionSer
     const session = sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: `no session ${request.params.id}` });
     return readSessionState(session);
+  });
+
+  // A session's per-account balances — XRP, the vault asset held, and vault shares — read live from the
+  // validated ledger. Polled by the front end for the wallet views.
+  app.get<{ Params: { id: string } }>("/sessions/:id/balances", async (request, reply) => {
+    const session = sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: `no session ${request.params.id}` });
+    return readBalances(session);
   });
 
   // A session's action log — every human, bot, and system action with its ledger result, oldest
