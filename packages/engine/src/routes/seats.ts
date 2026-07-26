@@ -4,14 +4,20 @@ import type { SessionService } from "../session-service.js";
 
 // Seat endpoints: a participant claims a seat to take over that role, and releases it back to open
 // where a bot fills it again. Occupancy is written through to the store so it survives a restart.
+//
+// Guard precedence is resource-first, matching the action route: unknown session → 404, unknown seat →
+// 404, missing participant → 400, occupancy conflict → 409. (Deriving the seat here also lets an unknown
+// seat return 404 rather than the 400 a bare registry error would produce.)
 export function registerSeatRoutes(app: FastifyInstance, sessions: SessionService): void {
   // Claim a seat for a participant. Rejected if a different participant already holds it.
   app.post<{ Params: { id: string; seat: string }; Body: { participant: string } }>(
     "/sessions/:id/seats/:seat/claim",
     async (request, reply) => {
+      const session = sessions.get(request.params.id);
+      if (!session) return reply.code(404).send({ error: `no session ${request.params.id}` });
+      if (!session.seats.has(request.params.seat)) return reply.code(404).send({ error: `no seat ${request.params.seat}` });
       const participant = request.body?.participant;
       if (!participant) return reply.code(400).send({ error: "participant is required" });
-      if (!sessions.get(request.params.id)) return reply.code(404).send({ error: `no session ${request.params.id}` });
       try {
         await sessions.claimSeat(request.params.id, request.params.seat, participant);
       } catch (err) {
@@ -25,9 +31,11 @@ export function registerSeatRoutes(app: FastifyInstance, sessions: SessionServic
   app.post<{ Params: { id: string; seat: string }; Body: { participant: string } }>(
     "/sessions/:id/seats/:seat/release",
     async (request, reply) => {
+      const session = sessions.get(request.params.id);
+      if (!session) return reply.code(404).send({ error: `no session ${request.params.id}` });
+      if (!session.seats.has(request.params.seat)) return reply.code(404).send({ error: `no seat ${request.params.seat}` });
       const participant = request.body?.participant;
       if (!participant) return reply.code(400).send({ error: "participant is required" });
-      if (!sessions.get(request.params.id)) return reply.code(404).send({ error: `no session ${request.params.id}` });
       try {
         await sessions.releaseSeat(request.params.id, request.params.seat, participant);
       } catch (err) {

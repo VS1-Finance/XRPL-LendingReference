@@ -1,13 +1,22 @@
 import { createHash } from "node:crypto";
 import type { Config } from "@lending/shared";
-import type { StepRecord } from "@lending/bootstrap";
-import { createSession, SessionRegistry, type Session, type SessionSummary } from "@lending/session";
+import { isPermissioned, type StepRecord } from "@lending/bootstrap";
+import { addParticipant, createSession, seatKey, SessionRegistry, type Session, type SessionSummary } from "@lending/session";
 import type { EngineStore, StoredAction } from "./store.js";
 
 // The largest pool a single session may request. Each participant is a funded ledger account with
 // trust lines and a credential, so an unbounded pool would ask the faucet and the ledger for far too
 // much; 20 per side keeps a session provisionable in a reasonable time.
 const MAX_POOL = 20;
+
+// A pooled role is already at MAX_POOL — a state conflict (409), distinct from a validation error (400)
+// or an on-ledger/faucet failure (500), so the route can map it precisely.
+export class CapacityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CapacityError";
+  }
+}
 
 function clampPool(requested: number | undefined, fallback: number): number {
   const n = typeof requested === "number" && Number.isFinite(requested) ? Math.round(requested) : fallback;
@@ -110,6 +119,44 @@ export class SessionService {
       session.env.steps.map((s) => ({ action: s.action, result: s.result, ...(s.txHash ? { txHash: s.txHash } : {}) })),
     );
     return summary;
+  }
+
+  // Add one participant to a running session at runtime, bot-free (the caller — the route — owns
+  // restarting the bot scheduler so the new seat is driven). Reconstructs the same seed and effective
+  // config `create` used, recovered from the session's env: asset from env.asset, and domain/permissioned
+  // from the on-ledger domain via isPermissioned. debtMaximum (used only for an IOU distribute) stays
+  // from the base config — a session provisioned with a custom debtMaximum override is an edge case,
+  // and the XRP-liquidity path already reads the true value live from the ledger inside addParticipant.
+  //
+  // Partial-failure note (carry-over review finding): if the on-ledger addParticipant call throws after
+  // creating the credential but before accept, a retry re-runs CredentialCreate → tecDUPLICATE → fatal.
+  // That is inherited from the shared builders and out of scope to fix here; this method only needs to
+  // let the error propagate cleanly (no swallow) and never persist a half-added seat — the store writes
+  // below run only once the on-ledger call has returned successfully.
+  async addParticipant(setupId: string, role: "depositor" | "borrower"): Promise<SessionSummary> {
+    const session = this.get(setupId);
+    if (!session) throw new Error(`no session ${setupId}`);
+
+    const plural = role === "depositor" ? "depositors" : "borrowers";
+    if (session.env.accounts[plural].length >= MAX_POOL) throw new CapacityError(`the ${plural} pool is at capacity (${MAX_POOL})`);
+
+    const token = this.tokens.get(setupId)!;
+    const seed = `${this.baseConfig.seed}-${token}`;
+    const config: Config = {
+      ...this.baseConfig,
+      seed,
+      setupId,
+      asset: session.env.asset,
+      domain: isPermissioned(session.env) ? this.baseConfig.domain : undefined,
+    };
+
+    const record = await addParticipant(session, role, seed, config);
+
+    await this.store.updateSessionEnv(setupId, session.env);
+    await this.store.createOccupancy(setupId, seatKey(role, record.index), { kind: "bot" });
+    await this.recordAction(setupId, { actor: seatKey(role, record.index), role, by: "system", action: "add-participant", code: "tesSUCCESS" });
+
+    return this.summaryOf(setupId)!;
   }
 
   // Reload every persisted session on boot: re-derive its seed from the base seed and stored token,

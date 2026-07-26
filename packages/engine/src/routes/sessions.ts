@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import type { SessionService } from "../session-service.js";
+import { CapacityError, type SessionService } from "../session-service.js";
+import type { BotService } from "../bot-service.js";
 import { readSessionState } from "../state-service.js";
 import { readBalances } from "../balances-service.js";
 
@@ -22,7 +23,7 @@ interface ProvisionBody {
 
 // Session endpoints: create a session (provision a fresh environment), list sessions, and fetch one
 // session's detail (its seats and who holds each).
-export function registerSessionRoutes(app: FastifyInstance, sessions: SessionService): void {
+export function registerSessionRoutes(app: FastifyInstance, sessions: SessionService, bots: BotService): void {
   // Create a session. An optional label makes it recognizable; provisioning runs on the ledger, so
   // this call takes as long as a full environment provision.
   app.post<{ Body: ProvisionBody }>("/sessions", async (request, reply) => {
@@ -90,5 +91,28 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionSer
   app.get<{ Params: { id: string } }>("/sessions/:id/log", async (request, reply) => {
     if (!sessions.get(request.params.id)) return reply.code(404).send({ error: `no session ${request.params.id}` });
     return sessions.log(request.params.id);
+  });
+
+  // Add one participant (depositor or borrower) to a running session — a new funded ledger account,
+  // seated bot-occupied. Runs the on-ledger recipe, so this call takes as long as adding that one
+  // member during provisioning.
+  app.post<{ Params: { id: string }; Body: { role?: string } }>("/sessions/:id/participants", async (request, reply) => {
+    const session = sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: `no session ${request.params.id}` });
+    const role = request.body?.role;
+    if (role !== "depositor" && role !== "borrower") return reply.code(400).send({ error: "role must be depositor or borrower" });
+    const wasRunning = bots.isRunning(request.params.id);
+    try {
+      const summary = await sessions.addParticipant(request.params.id, role);
+      // A running scheduler assigns variants once at start, so it won't drive a seat added mid-run.
+      // Restart it over the now-larger seat map so the new participant is driven immediately.
+      if (wasRunning) { bots.stop(request.params.id); bots.start(session, 15); }
+      return summary;
+    } catch (err) {
+      // Pool-at-capacity is a state conflict (409); anything else here is an on-ledger or faucet
+      // failure during provisioning of the new account — a server fault (500), not the caller's error.
+      if (err instanceof CapacityError) return reply.code(409).send({ error: err.message });
+      return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 }
