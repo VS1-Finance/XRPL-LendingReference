@@ -33,7 +33,7 @@ export async function buildApp(config: EngineConfig): Promise<FastifyInstance> {
 
   app.get("/health", async () => ({ status: "ok" }));
 
-  registerSessionRoutes(app, sessions);
+  registerSessionRoutes(app, sessions, bots);
   registerSeatRoutes(app, sessions);
   registerActionRoutes(app, sessions);
   registerBotRoutes(app, sessions, bots);

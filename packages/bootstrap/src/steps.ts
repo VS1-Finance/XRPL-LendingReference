@@ -27,7 +27,7 @@ const ASF_ALLOW_CLAWBACK = 16;
 const LSF_DEFAULT_RIPPLE = 0x00800000;
 const LSF_ALLOW_CLAWBACK = 0x80000000;
 
-interface StepDeps {
+export interface StepDeps {
   client: Client;
   config: Config;
   accounts: DerivedAccountSet;

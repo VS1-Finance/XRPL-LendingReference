@@ -91,6 +91,23 @@ export class EngineStore {
     });
   }
 
+  // Rewrite the stored env JSON after a runtime add appends an account.
+  async updateSessionEnv(setupId: string, env: ProvisionedEnvironment): Promise<void> {
+    await this.db.session.update({ where: { setupId }, data: { env: env as unknown as object } });
+  }
+
+  // Insert a new SeatOccupancy row for a brand-new seat (runtime add).
+  async createOccupancy(setupId: string, seatKey: string, occupant: Occupant): Promise<void> {
+    await this.db.seatOccupancy.create({
+      data: {
+        setupId,
+        seatKey,
+        kind: occupant.kind,
+        participant: occupant.kind === "human" ? occupant.id : null,
+      },
+    });
+  }
+
   // Append one action to a session's log. `seq` is assigned here as the next value for the session, so
   // ordering is stable regardless of concurrency.
   async appendAction(setupId: string, action: Omit<StoredAction, "seq" | "ts">): Promise<void> {

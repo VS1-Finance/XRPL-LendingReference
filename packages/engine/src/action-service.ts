@@ -22,6 +22,29 @@ export class ActionError extends Error {
   }
 }
 
+// Turn a thrown ledger/xrpl error into a clean 400 when it is caused by the caller's input rather than
+// an engine fault: xrpl's ValidationError (a malformed amount or transaction) and a preliminary `tem`
+// rejection (the transaction never reaches a ledger) are the client's fault. Anything else — a dropped
+// connection, an RPC fault, a genuinely unexpected error — is rethrown so it surfaces as a 500. Already
+// an ActionError → passed through untouched. Without this, a bad `amount` string surfaces as an opaque
+// 500 exactly like a real outage, which the two callers below cannot tell apart.
+function asClientError(err: unknown): never {
+  if (err instanceof ActionError) throw err;
+  const name = (err as { name?: string })?.name ?? "";
+  const message = err instanceof Error ? err.message : String(err);
+  // Client-caused failures: xrpl's ValidationError (malformed tx/amount), a preliminary `tem` rejection
+  // (the tx never reached a ledger), and the amount-shape errors thrown while building the tx (an
+  // "illegal amount" from the IOU serializer, or clampIssuedValueUp's "not a non-negative decimal").
+  if (
+    name === "ValidationError" ||
+    /Transaction failed, tem/.test(message) ||
+    /illegal amount|not a non-negative decimal|invalid amount/.test(message)
+  ) {
+    throw new ActionError(message, 400);
+  }
+  throw err;
+}
+
 // tfLoanDefault on LoanManage — the flag the owner sets to default a delinquent loan. This is the
 // same transaction the broker-enforcer bot submits; exposing it as an owner action lets a human do by
 // hand what the bot does automatically.
@@ -38,9 +61,13 @@ export async function dispatchAction(session: Session, request: ActionRequest, p
     throw new ActionError(`${request.seat} is not held by ${participant}`, 409);
   }
 
-  const tx = await buildTransaction(session, seat.address, request);
-  const result = await seat.signer.submit(tx);
-  return { action: request.action, code: result.engineResult, ...(result.hash ? { hash: result.hash } : {}) };
+  try {
+    const tx = await buildTransaction(session, seat.address, request);
+    const result = await seat.signer.submit(tx);
+    return { action: request.action, code: result.engineResult, ...(result.hash ? { hash: result.hash } : {}) };
+  } catch (err) {
+    asClientError(err);
+  }
 }
 
 async function buildTransaction(session: Session, account: string, request: ActionRequest): Promise<SubmittableTransaction> {
@@ -164,8 +191,13 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
   if (owner.occupant.kind !== "human" || owner.occupant.id !== participant) {
     throw new ActionError(`${ownerSeatKey} is not held by ${participant}`, 409);
   }
+  // Origination is owner-only: the signing wallets below are re-derived by role, so a non-owner seat
+  // would sign with the wrong account (Account ≠ key) and the ledger would reject it opaquely. Guard
+  // the roles here so a misdirected request is a clean rejection, not a 500.
+  if (owner.role !== "owner") throw new ActionError("only the owner seat can originate a loan", 409);
   const borrowerSeat = session.seats.get(required(params, "borrower"));
   if (!borrowerSeat) throw new ActionError(`session has no seat ${params.borrower}`, 404);
+  if (borrowerSeat.role !== "borrower") throw new ActionError(`${borrowerSeat.role} seat cannot be a loan counterparty`, 409);
 
   const loanSet = {
     TransactionType: "LoanSet" as const,
@@ -186,13 +218,17 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
   // seats' identities.
   const ownerWallet = deriveAccount(session.seed, "owner", owner.index).wallet;
   const borrowerWallet = deriveAccount(session.seed, "borrower", borrowerSeat.index).wallet;
-  const prepared = await session.client.autofill(loanSet);
-  const ownerSigned = ownerWallet.sign(prepared);
-  const combined = signLoanSetByCounterparty(borrowerWallet, ownerSigned.tx_blob);
-  const res = await session.client.submitAndWait(combined.tx_blob);
-  const meta = res.result.meta;
-  const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";
-  return { action: "originate", code, hash: res.result.hash };
+  try {
+    const prepared = await session.client.autofill(loanSet);
+    const ownerSigned = ownerWallet.sign(prepared);
+    const combined = signLoanSetByCounterparty(borrowerWallet, ownerSigned.tx_blob);
+    const res = await session.client.submitAndWait(combined.tx_blob);
+    const meta = res.result.meta;
+    const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";
+    return { action: "originate", code, hash: res.result.hash };
+  } catch (err) {
+    asClientError(err);
+  }
 }
 
 // Whether the vault asset is native XRP (currency "XRP" with no issuer) rather than an issued token.
@@ -204,17 +240,30 @@ function isXrp(session: Session): boolean {
 // Builds a ledger Amount for the session's asset from a whole-token value. For XRP that is a bare drops
 // string; for an issued token it is a currency/issuer/value object. Every action that carries an amount
 // goes through this, so both asset kinds are handled in one place.
+// A positive decimal string. Both asset kinds ultimately reject a non-numeric amount, but the XRP path
+// throws xrpl's ValidationError while the IOU path throws an "illegal amount" serialization error deep
+// in submit — different types, both surfacing as an opaque 500. Validating the shape here turns any bad
+// amount into a clean 400 up front, regardless of vault kind.
+function requireAmount(value: string): string {
+  if (!/^\d+(\.\d+)?$/.test(value.trim()) || Number(value) <= 0) {
+    throw new ActionError(`invalid amount: ${value}`, 400);
+  }
+  return value;
+}
+
 function assetAmount(session: Session, value: string): Amount {
-  if (isXrp(session)) return xrpToDrops(value);
+  const v = requireAmount(value);
+  if (isXrp(session)) return xrpToDrops(v);
   const { currency, issuer } = session.env.asset;
   if (!issuer) throw new ActionError("issued asset has no issuer", 500);
-  return { currency, issuer, value };
+  return { currency, issuer, value: v };
 }
 
 // A bare numeric value in the broker's asset units, for fields (loan principal, debt max) that take a
 // plain number rather than a full Amount: drops for XRP, whole tokens otherwise.
 function brokerValue(session: Session, value: string): string {
-  return isXrp(session) ? xrpToDrops(value) : value;
+  const v = requireAmount(value);
+  return isXrp(session) ? xrpToDrops(v) : v;
 }
 
 // The credential type for a credential/domain action: the request's explicit value, or the session's
