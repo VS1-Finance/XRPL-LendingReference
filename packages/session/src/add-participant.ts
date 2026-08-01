@@ -2,7 +2,7 @@ import {
   accountObjects,
   deriveAccount,
   fanOutFunding,
-  fundTreasuryForTargets,
+  resolveTreasury,
   isXrpAsset,
   readReserveRates,
   roleReserveDrops,
@@ -60,7 +60,7 @@ export async function addParticipant(
   }
   const totalDrops = reserveDrops + liquidityDrops;
 
-  const treasury = await fundTreasuryForTargets(session.client, 1, totalDrops, log);
+  const treasury = await resolveTreasury(session.client, 1, totalDrops, log);
   await fanOutFunding(session.client, treasury, [derived], { dropsForAccount: () => totalDrops, log });
 
   // A StepDeps scoped to just this member: the builders read deps.accounts.{issuer,credentialIssuer,

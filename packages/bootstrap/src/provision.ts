@@ -8,7 +8,7 @@ import {
   deriveAccountSet,
   allAccounts,
   fanOutFunding,
-  fundTreasuryForTargets,
+  resolveTreasury,
   generateSetupId,
   isXrpAsset,
   readReserveRates,
@@ -80,7 +80,7 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
     const everyAccount = allAccounts(accounts);
     const dropsForAccount = fundingPlan(config, reserveRates);
     const totalDrops = everyAccount.reduce((sum, a) => sum + dropsForAccount(a), 0);
-    const treasury = await fundTreasuryForTargets(client, everyAccount.length, totalDrops, log);
+    const treasury = await resolveTreasury(client, everyAccount.length, totalDrops, log);
     await fanOutFunding(client, treasury, everyAccount, { dropsForAccount, log });
 
     const deps = { client, config, accounts, setupId, env, log, onStep: options.onStep };
