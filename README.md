@@ -15,6 +15,13 @@ Together these let a vault accept deposits only from credentialed members of a p
 originate loans against that liquidity through a broker, and let the asset issuer retain clawback
 and freeze control over funds.
 
+Provisioning also uses **XLS-56 — Batch** where cross-account setup steps belong together atomically:
+a member's `CredentialCreate` + `CredentialAccept`, and a holder's `TrustSet` + issuer distribution,
+are each submitted as one all-or-nothing `Batch` transaction rather than as separate transactions.
+This is an infrastructure detail — the four amendments above are the product; Batch is how the
+environment is stood up. Batch requires the `BatchV1_1` amendment (active on Devnet) and a matching
+`xrpl` client (see Networks).
+
 ## Repository layout
 
 This is a pnpm workspace monorepo.
