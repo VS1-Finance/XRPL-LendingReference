@@ -57,6 +57,16 @@ export async function payableLoan(session: Session, borrower: string): Promise<R
   return loan;
 }
 
+// A fresh re-read of whether a loan is defaulted, for a borrower bot to check immediately before
+// submitting a repayment. payableLoan's own defaulted check can go stale across a ledger boundary if
+// the broker-enforcer bot defaults the loan in between; re-checking here avoids sending a repayment
+// the ledger would reject with tecNO_PERMISSION. Missing loan is treated as defaulted (nothing to pay).
+export async function loanDefaulted(client: Client, loanId: string): Promise<boolean> {
+  const loan = await loanNode(client, loanId);
+  if (!loan) return true;
+  return (Number(loan.Flags ?? 0) & LSF_LOAN_DEFAULTED) !== 0;
+}
+
 // Reads a ledger amount that may be a bare string or an issued-amount object with a `value`.
 function readAmount(value: unknown): string {
   if (typeof value === "string") return value;
