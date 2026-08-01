@@ -13,6 +13,6 @@
   "dependencies": {
     "@lending/shared": "workspace:*",
     "@lending/bootstrap": "workspace:*",
-    "xrpl": "^5.0.0"
+    "xrpl": "5.1.0-batch.1"
   }
 }

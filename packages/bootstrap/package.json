@@ -20,6 +20,6 @@
   },
   "dependencies": {
     "@lending/shared": "workspace:*",
-    "xrpl": "^5.0.0"
+    "xrpl": "5.1.0-batch.1"
   }
 }

@@ -23,6 +23,6 @@
     "@lending/bootstrap": "workspace:*",
     "@lending/lifecycle": "workspace:*",
     "@lending/ingester": "workspace:*",
-    "xrpl": "^5.0.0"
+    "xrpl": "5.1.0-batch.1"
   }
 }

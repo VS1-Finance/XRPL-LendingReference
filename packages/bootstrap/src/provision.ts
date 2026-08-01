@@ -17,11 +17,10 @@ import {
 import { assertCoverMeetsMinimum, assertSingleOwner } from "./assertions.js";
 import {
   runBatch,
+  runCrossAccountBatches,
   issuerFlagSteps,
-  trustSteps,
-  distributeSteps,
-  credentialCreateSteps,
-  credentialAcceptSteps,
+  trustAndDistributeUnits,
+  credentialHandshakeUnits,
   createBroker,
   createDomain,
   createVault,
@@ -84,30 +83,25 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
     await fanOutFunding(client, treasury, everyAccount, { dropsForAccount, log });
 
     const deps = { client, config, accounts, setupId, env, log, onStep: options.onStep };
-    const roleLabel = (a: { role: string; index: number }) =>
-      a.role === "owner" ? "owner" : `${a.role}[${a.index}]`;
 
     // Issuer flags and asset distribution only apply to an issued token. A native-XRP vault has no
     // currency issuer, so these steps are skipped — accounts already hold XRP from funding.
     if (!isXrpAsset(config.asset)) {
       // Batch 2: issuer flags (chained within the issuer's sequence).
       await runBatch(deps, issuerFlagSteps(deps));
-      // Batch 3: trust lines (one per holder + owner, all different accounts).
-      const holders = [accounts.owner, ...accounts.depositors, ...accounts.borrowers];
-      await runBatch(deps, holders.flatMap((h) => trustSteps(deps, h.wallet, roleLabel(h))));
-      // Batch 4: distributions (all from the issuer).
-      await runBatch(deps, [
-        ...distributeSteps(deps, accounts.owner.wallet, "owner", coverAndLiquidity(config)),
-        ...accounts.depositors.flatMap((d) => distributeSteps(deps, d.wallet, `depositor[${d.index}]`, liquidityPerHolder(config))),
-        ...accounts.borrowers.flatMap((b) => distributeSteps(deps, b.wallet, `borrower[${b.index}]`, liquidityPerHolder(config))),
-      ]);
+      // Batch 3+4: per-holder trust line + distribution, each holder's pair as one atomic XLS-56 Batch.
+      const distHolders = [
+        { wallet: accounts.owner.wallet, label: "owner", amount: coverAndLiquidity(config) },
+        ...accounts.depositors.map((d) => ({ wallet: d.wallet, label: `depositor[${d.index}]`, amount: liquidityPerHolder(config) })),
+        ...accounts.borrowers.map((b) => ({ wallet: b.wallet, label: `borrower[${b.index}]`, amount: liquidityPerHolder(config) })),
+      ];
+      await runCrossAccountBatches(deps, trustAndDistributeUnits(deps, distHolders));
     }
 
     // Credentials and the domain are only provisioned for a permissioned vault. A public vault skips
     // both — no credential is issued, no domain is created — so createVault below makes an open vault.
     if (config.domain) {
-      await runBatch(deps, credentialCreateSteps(deps));
-      await runBatch(deps, credentialAcceptSteps(deps));
+      await runCrossAccountBatches(deps, credentialHandshakeUnits(deps));
       await createDomain(deps);
     }
     await createVault(deps);

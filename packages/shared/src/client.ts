@@ -1,6 +1,11 @@
 import {
   Client,
   Wallet,
+  BatchFlags,
+  signMultiBatch,
+  combineBatchSigners,
+  decode,
+  type Batch,
   type AccountObjectsRequest,
   type SubmittableTransaction,
   type TxResponse,
@@ -86,8 +91,9 @@ export function classifyResult(engineResult: string): "ok" | "retry" | "fatal" {
   if (engineResult === "tesSUCCESS") return "ok";
   // Transient: queued behind another tx, sequence not yet current, fee risen, or open-ledger
   // per-account queue overflow (tel* codes) — all resolve once the ledger drains or advances.
+  // telINSUF_FEE_P is a preliminary insufficient-fee under load: a retry re-fills the fee and clears it.
   if ([
-    "terQUEUED", "terPRE_SEQ", "tefPAST_SEQ", "tecINSUFFICIENT_FEE",
+    "terQUEUED", "terPRE_SEQ", "tefPAST_SEQ", "tecINSUFFICIENT_FEE", "telINSUF_FEE_P",
     "telCAN_NOT_QUEUE", "telCAN_NOT_QUEUE_ANY", "telCAN_NOT_QUEUE_FULL",
     "telCAN_NOT_QUEUE_BLENDED", "telCAN_NOT_QUEUE_BLOCKED",
   ].includes(engineResult)) return "retry";
@@ -187,6 +193,94 @@ export async function submitBatch(client: Client, items: BatchItem[]): Promise<S
     throw new Error(`submitBatch: ${pending.length} transactions never validated after ${MAX_ATTEMPTS} attempts: ${stuck}`);
   }
   return results as SubmitResult[];
+}
+
+export interface BatchInner {
+  wallet: Wallet;
+  tx: SubmittableTransaction;
+  ctx: SubmitContext;
+}
+
+// Submit 2–8 transactions as ONE atomic XLS-56 Batch (tfAllOrNothing): either every inner applies or
+// none does. Unlike submitBatch (which co-locates each account's own txns per ledger but keeps them
+// independent), this is a hard, cross-account atomic unit — used for pairs that must succeed together
+// (credential create+accept; trust+distribute). Inner sequences and fees are filled by autofill;
+// tfInnerBatchTxn is set here. Each distinct account signs its own copy (signMultiBatch mutates in
+// place, so a copy per account), the copies are merged with combineBatchSigners, and the submitting
+// account signs the outer. Retries a transient outer result; a permanent result throws.
+const TF_INNER_BATCH_TXN = 0x40000000;
+
+export async function submitNativeBatch(client: Client, inners: BatchInner[]): Promise<SubmitResult> {
+  if (inners.length < 2 || inners.length > 8) {
+    throw new Error(`submitNativeBatch: needs 2–8 inner transactions, got ${inners.length}`);
+  }
+
+  const MAX_ATTEMPTS = 4;
+  let lastResult = "unknown";
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    // Tag each inner and mark it as an inner-batch txn. Do NOT set Sequence/Fee/SigningPubKey — autofill
+    // fills them and rejects non-conforming presets. No LastLedgerSequence on inners (batch rejects it).
+    const rawTransactions = inners.map(({ tx, ctx }) => {
+      const existingFlags = typeof (tx as { Flags?: number }).Flags === "number" ? (tx as { Flags: number }).Flags : 0;
+      const inner = {
+        ...tx,
+        Flags: existingFlags | TF_INNER_BATCH_TXN,
+        Memos: [...(("Memos" in tx && Array.isArray(tx.Memos) ? tx.Memos : [])), ...buildMemos(ctx.setupId, ctx.correlationId)],
+      } as SubmittableTransaction;
+      return { RawTransaction: inner };
+    });
+
+    // The submitting account: the first inner's account. It signs the outer too.
+    const submitter = inners[0]!.wallet;
+    const batch: Batch = {
+      TransactionType: "Batch",
+      Account: submitter.address,
+      Flags: BatchFlags.tfAllOrNothing,
+      RawTransactions: rawTransactions,
+    };
+
+    const autofilled = await client.autofill(batch as unknown as SubmittableTransaction) as unknown as Batch;
+
+    // Each distinct account signs a SEPARATE copy (signMultiBatch overwrites BatchSigners in place).
+    const accounts = new Map<string, Wallet>();
+    for (const { wallet } of inners) accounts.set(wallet.address, wallet);
+
+    // Fee: autofill computes the Batch base (2×base + Σ inner fees) but does not count BatchSigners, so
+    // add one base fee per BatchSigner or the ledger returns telINSUF_FEE_P. combineBatchSigners drops
+    // the submitter's own BatchSigner (the submitter signs the outer directly), so the count is the
+    // distinct accounts MINUS the submitter — always accounts.size - 1, since the submitter is one of them.
+    // Read inside the loop so a retry after a fee spike (telINSUF_FEE_P is retryable) re-reads the base.
+    const baseFeeDrops = BigInt((await client.request({ command: "fee" })).result.drops.base_fee);
+    autofilled.Fee = (BigInt(autofilled.Fee ?? "0") + baseFeeDrops * BigInt(accounts.size - 1)).toString();
+    const signedCopies = [...accounts.values()].map((wallet) => {
+      const copy = structuredClone(autofilled);
+      signMultiBatch(wallet, copy, { batchAccount: wallet.address });
+      return copy;
+    });
+
+    // Merge all BatchSigners into one (still-unsigned-outer) blob, then the submitter signs the outer.
+    const combinedBlob = combineBatchSigners(signedCopies);
+    const combined = decode(combinedBlob) as unknown as SubmittableTransaction;
+    const signed = submitter.sign(combined);
+    const response = await client.submitAndWait(signed.tx_blob);
+    const meta = response.result.meta;
+    const engineResult = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";
+    lastResult = engineResult;
+
+    const bucket = classifyResult(engineResult);
+    if (bucket === "ok") {
+      return { hash: response.result.hash, engineResult, validated: response.result.validated ?? false, response };
+    }
+    if (bucket === "fatal") {
+      const corr = inners.map((i) => i.ctx.correlationId).join(", ");
+      throw new Error(`Batch (${corr}) returned ${engineResult}`);
+    }
+    // retry: brief backoff, rebuild (fresh sequences) and resubmit.
+    await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+  }
+
+  const corr = inners.map((i) => i.ctx.correlationId).join(", ");
+  throw new Error(`submitNativeBatch: Batch (${corr}) never validated after ${MAX_ATTEMPTS} attempts (last: ${lastResult})`);
 }
 
 // Poll a transaction hash until it is validated or its LastLedgerSequence passes. Returns the validated
