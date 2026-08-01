@@ -214,6 +214,10 @@ export async function submitNativeBatch(client: Client, inners: BatchInner[]): P
     throw new Error(`submitNativeBatch: needs 2–8 inner transactions, got ${inners.length}`);
   }
 
+  // The network base fee, read once — it rarely moves ledger-to-ledger and is only used to top up the
+  // outer fee below, so there is no need to re-fetch it per retry.
+  const baseFeeDrops = BigInt((await client.request({ command: "fee" })).result.drops.base_fee);
+
   const MAX_ATTEMPTS = 4;
   let lastResult = "unknown";
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -244,12 +248,11 @@ export async function submitNativeBatch(client: Client, inners: BatchInner[]): P
     const accounts = new Map<string, Wallet>();
     for (const { wallet } of inners) accounts.set(wallet.address, wallet);
 
-    // Fee: autofill computes the Batch base (2×base + Σ inner fees) but only accounts for outer
-    // multisign Signers — not BatchSigners. The XLS-56 outer fee is (signers+2)×base + Σ inner, so add
-    // one base fee per BatchSigner (one per distinct account) or the ledger returns telINSUF_FEE_P.
-    const feeInfo = await client.request({ command: "fee" });
-    const baseFeeDrops = BigInt(feeInfo.result.drops.base_fee);
-    autofilled.Fee = (BigInt(autofilled.Fee ?? "0") + baseFeeDrops * BigInt(accounts.size)).toString();
+    // Fee: autofill computes the Batch base (2×base + Σ inner fees) but does not count BatchSigners, so
+    // add one base fee per BatchSigner or the ledger returns telINSUF_FEE_P. combineBatchSigners drops
+    // the submitter's own BatchSigner (the submitter signs the outer directly), so the count is the
+    // distinct accounts MINUS the submitter — always accounts.size - 1, since the submitter is one of them.
+    autofilled.Fee = (BigInt(autofilled.Fee ?? "0") + baseFeeDrops * BigInt(accounts.size - 1)).toString();
     const signedCopies = [...accounts.values()].map((wallet) => {
       const copy = structuredClone(autofilled);
       signMultiBatch(wallet, copy, { batchAccount: wallet.address });
