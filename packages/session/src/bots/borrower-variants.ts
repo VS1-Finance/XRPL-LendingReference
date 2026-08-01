@@ -1,10 +1,40 @@
+import type { SubmittableTransaction } from "xrpl";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { assetAmount, outstandingToPay, payableLoan } from "./reads.js";
+import { assetAmount, outstandingToPay, payableLoan, loanDefaulted } from "./reads.js";
 
 // The XRP Ledger epoch (2000-01-01) that ledger time fields are measured from.
 const RIPPLE_EPOCH = 946684800;
 const nowRipple = (): number => Math.floor(Date.now() / 1000) - RIPPLE_EPOCH;
+
+// Submit a borrower's LoanPay, guarding the read-then-submit window against the broker-enforcer bot.
+// payableLoan already excludes defaulted loans, but the enforcer can default the loan between that read
+// and this submit (a cross-account race over a ledger boundary). Re-check right before submitting, and
+// if the submit still lands on a now-defaulted loan (tecNO_PERMISSION), treat it as an expected no-op
+// rather than a logged failure — the repayment was simply overtaken by the default.
+async function submitRepay(
+  ctx: BotContext,
+  loanId: string,
+  amount: string,
+  label: string,
+  flags?: number,
+): Promise<StepOutcome> {
+  if (await loanDefaulted(ctx.session.client, loanId)) return idle; // defaulted since payableLoan read
+  const tx = {
+    TransactionType: "LoanPay",
+    Account: ctx.seat.address,
+    LoanID: loanId,
+    Amount: assetAmount(ctx.session, amount),
+    ...(flags !== undefined ? { Flags: flags } : {}),
+  } as SubmittableTransaction;
+  const r = await ctx.seat.signer.submit(tx);
+  if (r.engineResult === "tecNO_PERMISSION" && (await loanDefaulted(ctx.session.client, loanId))) {
+    ctx.log(`borrower ${ctx.seat.index} ${label} — loan defaulted mid-round, skipped`);
+    return idle;
+  }
+  ctx.log(`borrower ${ctx.seat.index} ${label} ${amount} — ${r.engineResult}`);
+  return { acted: true, action: "LoanPay", result: r.engineResult, hash: r.hash };
+}
 
 // A borrower that pays, but only after the payment is due — modelling a habitually late payer. It
 // waits until the current ledger time is past the loan's next-payment due date, then settles.
@@ -19,14 +49,7 @@ export const repayLate = (): BotVariant => ({
     if (due && nowRipple() < due) return idle; // not late yet — hold off until past due
 
     const amount = outstandingToPay(ctx.session, loan.TotalValueOutstanding);
-    const r = await ctx.seat.signer.submit({
-      TransactionType: "LoanPay",
-      Account: ctx.seat.address,
-      LoanID: loan.index as string,
-      Amount: assetAmount(ctx.session, amount),
-    });
-    ctx.log(`borrower ${ctx.seat.index} late repay ${amount} — ${r.engineResult}`);
-    return { acted: true, action: "LoanPay", result: r.engineResult, hash: r.hash };
+    return submitRepay(ctx, loan.index as string, amount, "late repay");
   },
 });
 
@@ -43,15 +66,7 @@ export const overpay = (extra = "1000"): BotVariant => ({
     // Pay the full outstanding plus a fixed overpayment. Both are in whole-token units: the outstanding
     // is normalised out of ledger units first, then the extra is added on top.
     const amount = String(Number(outstandingToPay(ctx.session, loan.TotalValueOutstanding)) + Number(extra));
-    const r = await ctx.seat.signer.submit({
-      TransactionType: "LoanPay",
-      Account: ctx.seat.address,
-      LoanID: loan.index as string,
-      Amount: assetAmount(ctx.session, amount),
-      Flags: TF_LOAN_OVERPAYMENT,
-    });
-    ctx.log(`borrower ${ctx.seat.index} overpay ${amount} — ${r.engineResult}`);
-    return { acted: true, action: "LoanPay", result: r.engineResult, hash: r.hash };
+    return submitRepay(ctx, loan.index as string, amount, "overpay", TF_LOAN_OVERPAYMENT);
   },
 });
 
@@ -65,14 +80,7 @@ export const repayEarly = (): BotVariant => ({
     if (!loan) return idle;
 
     const amount = outstandingToPay(ctx.session, loan.TotalValueOutstanding);
-    const r = await ctx.seat.signer.submit({
-      TransactionType: "LoanPay",
-      Account: ctx.seat.address,
-      LoanID: loan.index as string,
-      Amount: assetAmount(ctx.session, amount),
-    });
-    ctx.log(`borrower ${ctx.seat.index} early repay ${amount} — ${r.engineResult}`);
-    return { acted: true, action: "LoanPay", result: r.engineResult, hash: r.hash };
+    return submitRepay(ctx, loan.index as string, amount, "early repay");
   },
 });
 
