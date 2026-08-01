@@ -4,7 +4,9 @@ import {
   correlationId,
   isXrpAsset,
   submitBatch,
+  submitNativeBatch,
   type BatchItem,
+  type BatchInner,
 } from "@lending/shared";
 import { VaultCreateFlags, VaultWithdrawalPolicy, xrpToDrops, type Client, type Currency, type Wallet, type SubmittableTransaction } from "xrpl";
 import {
@@ -75,6 +77,82 @@ export async function runBatch(deps: StepDeps, steps: PlannedStep[]): Promise<vo
     deps.env.steps.push(record);
     deps.onStep?.(record);
   });
+}
+
+export interface BatchUnit {
+  key: string;
+  // Skip this unit entirely when already satisfied on-ledger (idempotent re-run).
+  alreadyDone: () => Promise<boolean>;
+  // On-ledger source of truth after the Batch validates — the pair actually took effect.
+  verify: () => Promise<boolean>;
+  // The paired inner txns (e.g. create+accept, or trust+distribute), signed by their own accounts.
+  inners: { action: string; build: () => { wallet: Wallet; tx: SubmittableTransaction } }[];
+}
+
+// Run cross-account pairs as atomic XLS-56 Batches. Each unit's inners either all apply or none do.
+// Units already satisfied on-ledger are skipped (recorded as skipped, same as runBatch). Remaining
+// units are chunked so no Batch exceeds 8 inner txns, submitted via submitNativeBatch, then each unit
+// is re-checked on-ledger. Preserves the StepRecord/onStep/log bookkeeping and action names exactly.
+export async function runCrossAccountBatches(deps: StepDeps, units: BatchUnit[]): Promise<void> {
+  if (units.length === 0) return;
+
+  const done = await Promise.all(units.map((u) => u.alreadyDone()));
+  const todo: BatchUnit[] = [];
+  units.forEach((u, i) => {
+    if (done[i]) {
+      for (const inner of u.inners) {
+        const corr = correlationId(deps.setupId, inner.action);
+        deps.log(`${inner.action} — already present, skip`);
+        const record: StepRecord = { action: inner.action, correlationId: corr, result: "skipped", skipped: true };
+        deps.env.steps.push(record);
+        deps.onStep?.(record);
+      }
+    } else {
+      todo.push(u);
+    }
+  });
+  if (todo.length === 0) return;
+
+  // Chunk units so total inners per Batch ≤ 8. Units here are pairs (2 inners) → ≤4 units per chunk,
+  // but chunk by inner count to stay correct if a unit ever carries a different count.
+  const chunks: BatchUnit[][] = [];
+  let current: BatchUnit[] = [];
+  let innerCount = 0;
+  for (const u of todo) {
+    if (innerCount + u.inners.length > 8) {
+      chunks.push(current);
+      current = [];
+      innerCount = 0;
+    }
+    current.push(u);
+    innerCount += u.inners.length;
+  }
+  if (current.length) chunks.push(current);
+
+  for (const chunk of chunks) {
+    const inners: BatchInner[] = chunk.flatMap((u) =>
+      u.inners.map((inner) => {
+        const { wallet, tx } = inner.build();
+        return { wallet, tx, ctx: { setupId: deps.setupId, correlationId: correlationId(deps.setupId, inner.action) } };
+      }),
+    );
+    const result = await submitNativeBatch(deps.client, inners);
+
+    // The outer succeeded; confirm each unit actually took effect on-ledger, then record its inners.
+    const verified = await Promise.all(chunk.map((u) => u.verify()));
+    chunk.forEach((u, i) => {
+      if (!verified[i]) {
+        throw new Error(`cross-account batch unit ${u.key} did not verify on-ledger after Batch ${result.hash.slice(0, 12)}…`);
+      }
+      for (const inner of u.inners) {
+        deps.log(`${inner.action} — ${result.engineResult} (batch ${result.hash.slice(0, 12)}…)`);
+        const record: StepRecord = { action: inner.action, correlationId: correlationId(deps.setupId, inner.action), result: result.engineResult, skipped: false };
+        record.txHash = result.hash;
+        deps.env.steps.push(record);
+        deps.onStep?.(record);
+      }
+    });
+  }
 }
 
 // ── New builder functions (Task 4) ─────────────────────────────────────────────────────────────
