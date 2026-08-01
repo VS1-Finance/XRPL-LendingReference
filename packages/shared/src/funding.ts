@@ -113,6 +113,34 @@ export async function fundTreasuryForTargets(
   return treasury;
 }
 
+// Resolve the treasury the fan-out funds from. When XRP_TREASURY_SEED is set, an internal wallet
+// (funded once, out of band) is the source: it avoids the per-request faucet ceiling that makes an
+// XRP pool slow to stand up. That wallet is not auto-refilled — if it cannot cover the fan-out, this
+// fails fast asking for a top-up. With no seed set, it falls back to the faucet-funded treasury, so a
+// fresh clone needs no extra configuration.
+export async function resolveTreasury(
+  client: Client,
+  targetCount: number,
+  totalDrops: number,
+  log: (msg: string) => void = () => {},
+): Promise<Wallet> {
+  const seed = process.env.XRP_TREASURY_SEED?.trim();
+  if (!seed) return fundTreasuryForTargets(client, targetCount, totalDrops, log);
+
+  const headroomDrops = 20_000_000;
+  const requiredDrops = BigInt(totalDrops + headroomDrops);
+  const treasury = Wallet.fromSeed(seed);
+  const balance = await accountBalanceDrops(client, treasury.address);
+  log(`internal treasury ${treasury.address} — balance ${dropsToXrp(balance.toString())} XRP`);
+  if (balance < requiredDrops) {
+    throw new Error(
+      `internal treasury ${treasury.address} holds ${dropsToXrp(balance.toString())} XRP but the pool needs ` +
+        `${dropsToXrp(requiredDrops.toString())}; top up XRP_TREASURY_SEED or lower cover/debt amounts or pool size`,
+    );
+  }
+  return treasury;
+}
+
 async function accountBalanceDrops(client: Client, address: string): Promise<bigint> {
   try {
     const res = await client.request({ command: "account_info", account: address, ledger_index: "validated" });

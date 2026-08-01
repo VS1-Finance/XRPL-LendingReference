@@ -88,16 +88,27 @@ export class SessionService {
         depositors: clampPool(opts.depositors, this.baseConfig.pool.depositors),
         borrowers: clampPool(opts.borrowers, this.baseConfig.pool.borrowers),
       },
-      // A different vault asset: a non-XRP IOU currency, with the issuer filled in at provision time
-      // from the derived issuer account (issuer omitted here).
-      ...(opts.asset && opts.asset.toUpperCase() !== "XRP"
-        ? { asset: { currency: normalizeCurrency(opts.asset) } }
+      // The vault asset. "XRP" (the UI's default) provisions a native-XRP vault — no currency issuer,
+      // no trust lines, no clawback; the provisioning path keys all of that off isXrpAsset. Any other
+      // value is an IOU currency, with the issuer filled in at provision time from the derived issuer
+      // account (issuer omitted here). Only an omitted asset falls back to the base config.
+      ...(opts.asset
+        ? opts.asset.toUpperCase() === "XRP"
+          ? { asset: { currency: "XRP" } }
+          : { asset: { currency: normalizeCurrency(opts.asset) } }
         : {}),
       // A public vault drops the domain entirely — no gate, no credentials. Permissioned keeps the base
       // config's domain. Explicit false is the only way to opt out; the default stays permissioned.
       ...(opts.permissioned === false ? { domain: undefined } : {}),
       ...(opts.coverAmount ? { coverAmount: opts.coverAmount } : {}),
-      ...(opts.debtMaximum ? { debtMaximum: opts.debtMaximum } : {}),
+      // Loan ceiling. An XRP vault funds each holder debtMaximum XRP of real liquidity from the faucet
+      // (an IOU vault mints it), so the base config's large default is faucet-hostile for XRP: default
+      // it to a small, provisionable ceiling when the caller gives none. An explicit value always wins.
+      ...(opts.debtMaximum
+        ? { debtMaximum: opts.debtMaximum }
+        : opts.asset?.toUpperCase() === "XRP"
+          ? { debtMaximum: "500" }
+          : {}),
       ...(opts.coverRatePercent !== undefined ? { coverRateMinimum: pctToScaled(opts.coverRatePercent) } : {}),
       ...(opts.liquidationRatePercent !== undefined ? { coverRateLiquidation: pctToScaled(opts.liquidationRatePercent) } : {}),
       ...(opts.managementFeePercent !== undefined ? { managementFeeRate: pctToScaled(opts.managementFeePercent) } : {}),
