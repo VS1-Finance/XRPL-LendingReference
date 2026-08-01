@@ -138,11 +138,15 @@ export async function runCrossAccountBatches(deps: StepDeps, units: BatchUnit[])
     );
     const result = await submitNativeBatch(deps.client, inners);
 
-    // The outer succeeded; confirm each unit actually took effect on-ledger, then record its inners.
+    // The outer succeeded; confirm each unit actually took effect on-ledger. Record every unit that
+    // verified true first, so a unit that landed keeps its audit trail even if a later unit in the
+    // same chunk failed — only then throw for whichever units failed verification.
     const verified = await Promise.all(chunk.map((u) => u.verify()));
+    const failed: BatchUnit[] = [];
     chunk.forEach((u, i) => {
       if (!verified[i]) {
-        throw new Error(`cross-account batch unit ${u.key} did not verify on-ledger after Batch ${result.hash.slice(0, 12)}…`);
+        failed.push(u);
+        return;
       }
       for (const inner of u.inners) {
         deps.log(`${inner.action} — ${result.engineResult} (batch ${result.hash.slice(0, 12)}…)`);
@@ -152,6 +156,9 @@ export async function runCrossAccountBatches(deps: StepDeps, units: BatchUnit[])
         deps.onStep?.(record);
       }
     });
+    if (failed.length > 0) {
+      throw new Error(`cross-account batch unit(s) ${failed.map((u) => u.key).join(", ")} did not verify on-ledger after Batch ${result.hash.slice(0, 12)}…`);
+    }
   }
 }
 
@@ -173,6 +180,9 @@ export function issuerFlagSteps(deps: StepDeps): PlannedStep[] {
   ];
 }
 
+// Still used by session/add-participant.ts to run trust and distribute as two separate steps at
+// runtime (the new participant's own connection signs the TrustSet; the provisioning path above now
+// uses the atomic trustAndDistributeUnits instead).
 export function trustSteps(deps: StepDeps, holder: Wallet, role: string): PlannedStep[] {
   if (isXrpAsset(deps.config.asset)) return [];
   const issuer = deps.accounts.issuer.wallet;
@@ -195,6 +205,36 @@ export function distributeSteps(deps: StepDeps, holder: Wallet, role: string, am
   }];
 }
 
+// Per IOU holder (incl. owner): the TrustSet (holder) + distribute Payment (issuer) pair, as one atomic
+// BatchUnit. Idempotent when the holder already holds at least the target amount (which implies the
+// trust line exists). No-op for an XRP vault (no issuer/trust/distribute).
+export function trustAndDistributeUnits(
+  deps: StepDeps,
+  holders: { wallet: Wallet; label: string; amount: string }[],
+): BatchUnit[] {
+  if (isXrpAsset(deps.config.asset)) return [];
+  const issuer = deps.accounts.issuer.wallet;
+  const currency = deps.config.asset.currency;
+  return holders.map(({ wallet, label, amount }) => {
+    const holds = async () => Number(await issuedBalance(deps.client, wallet.address, currency, issuer.address)) >= Number(amount);
+    return {
+      key: `trust-distribute-${label}`,
+      alreadyDone: holds,
+      verify: holds,
+      inners: [
+        {
+          action: `trust-${label}`,
+          build: () => ({ wallet, tx: { TransactionType: "TrustSet", Account: wallet.address, LimitAmount: { currency, issuer: issuer.address, value: "100000000" } } }),
+        },
+        {
+          action: `distribute-${label}`,
+          build: () => ({ wallet: issuer, tx: { TransactionType: "Payment", Account: issuer.address, Destination: wallet.address, Amount: { currency, issuer: issuer.address, value: amount } } }),
+        },
+      ],
+    };
+  });
+}
+
 // The first accepted credential type from a permissioned config. Missing domain is a programming error.
 function requireCredentialType(deps: StepDeps): string {
   const domain = deps.config.domain;
@@ -209,6 +249,34 @@ function requireCredentialIssuer(deps: StepDeps) {
   return credentialIssuer.wallet;
 }
 
+// Per credentialed holder: the CredentialCreate (credential issuer) + CredentialAccept (holder) pair,
+// as one atomic BatchUnit. Idempotent on an already-accepted credential.
+export function credentialHandshakeUnits(deps: StepDeps): BatchUnit[] {
+  const issuer = requireCredentialIssuer(deps);
+  const credHex = encodeCredentialType(requireCredentialType(deps));
+  return [...deps.accounts.depositors, ...deps.accounts.borrowers].map((member) => {
+    const accepted = () => hasAcceptedCredential(deps.client, member.wallet.address, issuer.address, credHex);
+    return {
+      key: `credential-${member.role}[${member.index}]`,
+      alreadyDone: accepted,
+      verify: accepted,
+      inners: [
+        {
+          action: `credential-create-${member.role}[${member.index}]`,
+          build: () => ({ wallet: issuer, tx: { TransactionType: "CredentialCreate", Account: issuer.address, Subject: member.wallet.address, CredentialType: credHex } }),
+        },
+        {
+          action: `credential-accept-${member.role}[${member.index}]`,
+          build: () => ({ wallet: member.wallet, tx: { TransactionType: "CredentialAccept", Account: member.wallet.address, Issuer: issuer.address, CredentialType: credHex } }),
+        },
+      ],
+    };
+  });
+}
+
+// Still used by session/add-participant.ts to run create and accept as two separate steps at runtime
+// (the new participant's own connection signs the accept; the provisioning path above now uses the
+// atomic credentialHandshakeUnits instead).
 export function credentialCreateSteps(deps: StepDeps): PlannedStep[] {
   const issuer = requireCredentialIssuer(deps);
   const credHex = encodeCredentialType(requireCredentialType(deps));
