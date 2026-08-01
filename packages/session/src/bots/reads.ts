@@ -163,5 +163,10 @@ export async function maxOriginatable(session: Session): Promise<number> {
   const coverHeadroom = coverSupportsTotal - debtTotal;
   const debtHeadroom = debtMaximum > 0 ? debtMaximum - debtTotal : Infinity;
 
-  return Math.max(0, Math.min(available, coverHeadroom, debtHeadroom));
+  const ceiling = Math.min(available, coverHeadroom, debtHeadroom);
+  // Leave a margin below the cover ceiling. The ledger backs a loan's whole outstanding balance —
+  // principal plus accruing interest — against cover, so a principal originated at the exact ceiling
+  // is rejected (tecLIMIT_EXCEEDED) the moment any interest accrues. Originate at most 80% of the
+  // headroom so principal plus interest stays within cover for the bot's loan terms.
+  return Math.max(0, Math.floor(ceiling * 0.8));
 }
