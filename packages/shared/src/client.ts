@@ -91,8 +91,9 @@ export function classifyResult(engineResult: string): "ok" | "retry" | "fatal" {
   if (engineResult === "tesSUCCESS") return "ok";
   // Transient: queued behind another tx, sequence not yet current, fee risen, or open-ledger
   // per-account queue overflow (tel* codes) — all resolve once the ledger drains or advances.
+  // telINSUF_FEE_P is a preliminary insufficient-fee under load: a retry re-fills the fee and clears it.
   if ([
-    "terQUEUED", "terPRE_SEQ", "tefPAST_SEQ", "tecINSUFFICIENT_FEE",
+    "terQUEUED", "terPRE_SEQ", "tefPAST_SEQ", "tecINSUFFICIENT_FEE", "telINSUF_FEE_P",
     "telCAN_NOT_QUEUE", "telCAN_NOT_QUEUE_ANY", "telCAN_NOT_QUEUE_FULL",
     "telCAN_NOT_QUEUE_BLENDED", "telCAN_NOT_QUEUE_BLOCKED",
   ].includes(engineResult)) return "retry";
@@ -214,10 +215,6 @@ export async function submitNativeBatch(client: Client, inners: BatchInner[]): P
     throw new Error(`submitNativeBatch: needs 2–8 inner transactions, got ${inners.length}`);
   }
 
-  // The network base fee, read once — it rarely moves ledger-to-ledger and is only used to top up the
-  // outer fee below, so there is no need to re-fetch it per retry.
-  const baseFeeDrops = BigInt((await client.request({ command: "fee" })).result.drops.base_fee);
-
   const MAX_ATTEMPTS = 4;
   let lastResult = "unknown";
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -252,6 +249,8 @@ export async function submitNativeBatch(client: Client, inners: BatchInner[]): P
     // add one base fee per BatchSigner or the ledger returns telINSUF_FEE_P. combineBatchSigners drops
     // the submitter's own BatchSigner (the submitter signs the outer directly), so the count is the
     // distinct accounts MINUS the submitter — always accounts.size - 1, since the submitter is one of them.
+    // Read inside the loop so a retry after a fee spike (telINSUF_FEE_P is retryable) re-reads the base.
+    const baseFeeDrops = BigInt((await client.request({ command: "fee" })).result.drops.base_fee);
     autofilled.Fee = (BigInt(autofilled.Fee ?? "0") + baseFeeDrops * BigInt(accounts.size - 1)).toString();
     const signedCopies = [...accounts.values()].map((wallet) => {
       const copy = structuredClone(autofilled);
