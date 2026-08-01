@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  xrpl: 5.1.0-batch.1
+
 importers:
 
   .:
@@ -24,8 +27,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
       xrpl:
-        specifier: ^5.0.0
-        version: 5.0.0
+        specifier: 5.1.0-batch.1
+        version: 5.1.0-batch.1
 
   packages/engine:
     dependencies:
@@ -54,8 +57,8 @@ importers:
         specifier: ^5.1.0
         version: 5.10.0
       xrpl:
-        specifier: ^5.0.0
-        version: 5.0.0
+        specifier: 5.1.0-batch.1
+        version: 5.1.0-batch.1
     devDependencies:
       prisma:
         specifier: ^6.1.0
@@ -70,8 +73,8 @@ importers:
         specifier: ^6.1.0
         version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
       xrpl:
-        specifier: ^5.0.0
-        version: 5.0.0
+        specifier: 5.1.0-batch.1
+        version: 5.1.0-batch.1
     devDependencies:
       prisma:
         specifier: ^6.1.0
@@ -83,8 +86,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
       xrpl:
-        specifier: ^5.0.0
-        version: 5.0.0
+        specifier: 5.1.0-batch.1
+        version: 5.1.0-batch.1
 
   packages/negative-suite:
     dependencies:
@@ -95,8 +98,8 @@ importers:
         specifier: workspace:*
         version: link:../shared
       xrpl:
-        specifier: ^5.0.0
-        version: 5.0.0
+        specifier: 5.1.0-batch.1
+        version: 5.1.0-batch.1
 
   packages/session:
     dependencies:
@@ -113,14 +116,14 @@ importers:
         specifier: workspace:*
         version: link:../shared
       xrpl:
-        specifier: ^5.0.0
-        version: 5.0.0
+        specifier: 5.1.0-batch.1
+        version: 5.1.0-batch.1
 
   packages/shared:
     dependencies:
       xrpl:
-        specifier: ^5.0.0
-        version: 5.0.0
+        specifier: 5.1.0-batch.1
+        version: 5.1.0-batch.1
       zod:
         specifier: ^3.24.0
         version: 3.25.76
@@ -612,8 +615,8 @@ packages:
     resolution: {integrity: sha512-JQHLKuVJV8lv9Qobmn4aUM2Dpv9WRRLKnNWfM8tN02fAbUtG8mUPsu9q9UYX8P76G4qzytEc5ZKMp/3JggNYmw==}
     engines: {node: '>= 18'}
 
-  ripple-binary-codec@2.8.0:
-    resolution: {integrity: sha512-+NKnOi3hdzjm5dDpoZLUEaYon1jahPlSGnp3YrDoNMSR09ICEqgupN5wpEkPuqJvV75PF/g+W1QUwIXVzbEe7w==}
+  ripple-binary-codec@2.9.0-batch.1:
+    resolution: {integrity: sha512-rqMFqnTz+1qTUZxjvrfL5umKGTm9TfkaPkt6CphIbPkni3sHwQFXPar+iLMOYXSJ/DniLlnuwV32ydGOKq48NQ==}
     engines: {node: '>= 18'}
 
   ripple-keypairs@3.0.0:
@@ -683,8 +686,8 @@ packages:
       utf-8-validate:
         optional: true
 
-  xrpl@5.0.0:
-    resolution: {integrity: sha512-YqaTFJUnhOu0mI4bsuHbKGj6w9ATcH8EIgw+gOLnh1rrlLTo5oImLQzhKJixCAPqqWOKnsY7J3jsN+l+zeEWgA==}
+  xrpl@5.1.0-batch.1:
+    resolution: {integrity: sha512-kiW3cacOiHSpG31Y8XZjEWpw9HLeJSr8h+dz7zcVTyYaadRwJ8+Y/dDK0zr+5YONp7uGppfDerOqbVdVHwS4Tw==}
     engines: {node: '>=20.19.0'}
 
   zod@3.25.76:
@@ -1153,7 +1156,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  ripple-binary-codec@2.8.0:
+  ripple-binary-codec@2.9.0-batch.1:
     dependencies:
       '@xrplf/isomorphic': 1.0.2
       bignumber.js: 10.0.2
@@ -1209,7 +1212,7 @@ snapshots:
 
   ws@8.21.0: {}
 
-  xrpl@5.0.0:
+  xrpl@5.1.0-batch.1:
     dependencies:
       '@scure/bip32': 2.2.0
       '@scure/bip39': 2.2.0
@@ -1219,7 +1222,7 @@ snapshots:
       eventemitter3: 5.0.4
       fast-json-stable-stringify: 2.1.0
       ripple-address-codec: 5.0.1
-      ripple-binary-codec: 2.8.0
+      ripple-binary-codec: 2.9.0-batch.1
       ripple-keypairs: 3.0.0
     transitivePeerDependencies:
       - bufferutil

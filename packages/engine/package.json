@@ -28,7 +28,7 @@
     "@fastify/cors": "^11.0.0",
     "@prisma/client": "^6.1.0",
     "fastify": "^5.1.0",
-    "xrpl": "^5.0.0"
+    "xrpl": "5.1.0-batch.1"
   },
   "devDependencies": {
     "prisma": "^6.1.0"

@@ -243,6 +243,13 @@ export async function submitNativeBatch(client: Client, inners: BatchInner[]): P
     // Each distinct account signs a SEPARATE copy (signMultiBatch overwrites BatchSigners in place).
     const accounts = new Map<string, Wallet>();
     for (const { wallet } of inners) accounts.set(wallet.address, wallet);
+
+    // Fee: autofill computes the Batch base (2×base + Σ inner fees) but only accounts for outer
+    // multisign Signers — not BatchSigners. The XLS-56 outer fee is (signers+2)×base + Σ inner, so add
+    // one base fee per BatchSigner (one per distinct account) or the ledger returns telINSUF_FEE_P.
+    const feeInfo = await client.request({ command: "fee" });
+    const baseFeeDrops = BigInt(feeInfo.result.drops.base_fee);
+    autofilled.Fee = (BigInt(autofilled.Fee ?? "0") + baseFeeDrops * BigInt(accounts.size)).toString();
     const signedCopies = [...accounts.values()].map((wallet) => {
       const copy = structuredClone(autofilled);
       signMultiBatch(wallet, copy, { batchAccount: wallet.address });
