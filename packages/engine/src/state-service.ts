@@ -7,8 +7,8 @@ import type { Session } from "@lending/session";
 // broker's cover, the loans and their status, and the seat map with who holds each.
 export interface SessionState {
   setupId: string;
-  vault: { assetsTotal: string; assetsAvailable: string; shareMptId?: string } | null;
-  broker: { coverAvailable: string } | null;
+  vault: { assetsTotal: string; assetsAvailable: string; shareMptId?: string; sharesTotal?: string; lossUnrealized?: string; scale?: number } | null;
+  broker: { coverAvailable: string; debtTotal?: string; debtMaximum?: string; managementFeeRate?: number; coverRateMinimum?: number; coverRateLiquidation?: number } | null;
   // Per loan: its balances and status, plus whether it can be defaulted right now and, if not yet,
   // how many seconds until it can be (past its next payment due date plus grace period).
   loans: {
@@ -45,6 +45,8 @@ export async function readSessionState(session: Session): Promise<SessionState> 
   const owner = session.env.accounts.owner.address;
   const vault = await firstObject(session, owner, "vault");
   const broker = await firstObject(session, owner, "loan_broker");
+  // Total shares in issue lives on the share MPT issuance, not the vault — one extra read.
+  const sharesTotal = await shareOutstanding(session, session.env.objects.shareMptId);
 
   const loans = [];
   for (const b of session.env.accounts.borrowers) {
@@ -92,8 +94,26 @@ export async function readSessionState(session: Session): Promise<SessionState> 
 
   return {
     setupId: session.setupId,
-    vault: vault ? { assetsTotal: assetValue(vault.AssetsTotal), assetsAvailable: assetValue(vault.AssetsAvailable), ...(session.env.objects.shareMptId ? { shareMptId: session.env.objects.shareMptId } : {}) } : null,
-    broker: broker ? { coverAvailable: assetValue(broker.CoverAvailable) } : null,
+    vault: vault
+      ? {
+          assetsTotal: assetValue(vault.AssetsTotal),
+          assetsAvailable: assetValue(vault.AssetsAvailable),
+          ...(session.env.objects.shareMptId ? { shareMptId: session.env.objects.shareMptId } : {}),
+          sharesTotal,
+          lossUnrealized: assetValue(vault.LossUnrealized),
+          scale: Number(vault.Scale ?? 0),
+        }
+      : null,
+    broker: broker
+      ? {
+          coverAvailable: assetValue(broker.CoverAvailable),
+          debtTotal: assetValue(broker.DebtTotal),
+          debtMaximum: assetValue(broker.DebtMaximum),
+          managementFeeRate: Number(broker.ManagementFeeRate ?? 0),
+          coverRateMinimum: Number(broker.CoverRateMinimum ?? 0),
+          coverRateLiquidation: Number(broker.CoverRateLiquidation ?? 0),
+        }
+      : null,
     loans,
     seats: [...session.seats.values()].map((s) => ({
       key: `${s.role}:${s.index}`,
@@ -107,6 +127,19 @@ export async function readSessionState(session: Session): Promise<SessionState> 
 async function firstObject(session: Session, account: string, type: "vault" | "loan_broker"): Promise<Record<string, unknown> | undefined> {
   const res = await session.client.request({ command: "account_objects", account, type, ledger_index: "validated" });
   return (res.result.account_objects as unknown as Record<string, unknown>[])[0];
+}
+
+// Total vault shares in issue, read from the share MPT issuance (the vault object does not carry a
+// share total). Shares are raw integer base units on the issuance. Missing/failed reads are "0".
+async function shareOutstanding(session: Session, shareMptId: string | undefined): Promise<string> {
+  if (!shareMptId) return "0";
+  try {
+    const res = await session.client.request({ command: "ledger_entry", mpt_issuance: shareMptId, ledger_index: "validated" });
+    const node = res.result.node as unknown as Record<string, unknown> | undefined;
+    return String(node?.OutstandingAmount ?? "0");
+  } catch {
+    return "0";
+  }
 }
 
 function readAmount(value: unknown): string {
