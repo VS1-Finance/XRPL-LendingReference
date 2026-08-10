@@ -1,6 +1,6 @@
 import { sleep } from "@lending/shared";
 import type { Session } from "../session.js";
-import { isBotDriven, keyOf } from "../seat.js";
+import { fillWithBot, isBotDriven, isOpen, keyOf } from "../seat.js";
 import type { BotVariant } from "./variant.js";
 import { assignAutomatically, type VariantAssignment } from "./assignment.js";
 
@@ -52,6 +52,17 @@ export class BotScheduler {
     let round = 0;
     while (this.running) {
       round++;
+      // Self-heal: a seat a human released mid-run is now "open". If it has a variant assigned,
+      // promote it back to bot control so the pool resumes driving it this same round. Clear any
+      // stand-down bookkeeping for that seat so a returned seat starts with a clean slate.
+      for (const seat of this.session.seats.values()) {
+        const key = keyOf(seat);
+        if (isOpen(seat) && assignment.get(key)) {
+          fillWithBot(seat);
+          lastReject.delete(key);
+          exhausted.delete(key);
+        }
+      }
       for (const seat of this.session.seats.values()) {
         if (!this.running) break;
         if (!isBotDriven(seat)) continue; // a human holds this seat — stand down
@@ -90,14 +101,16 @@ export class BotScheduler {
     }
   }
 
-  // True when every seat that has a bot variant assigned and is currently bot-driven has stood down,
-  // so there is no more work for the scheduler to do.
+  // True when there is no more work for the scheduler to do: every assigned seat has either stood down
+  // or is human-held. A seat a human released to "open" still counts as active — the next round's
+  // self-heal re-fills it — so the pool must not stop while such a reclaimable seat exists (otherwise a
+  // released owner seat could stall the market instead of returning to bot control).
   private allExhausted(assignment: VariantAssignment, exhausted: Set<string>): boolean {
     let active = 0;
     for (const seat of this.session.seats.values()) {
-      if (!isBotDriven(seat)) continue;
       const key = keyOf(seat);
       if (!assignment.get(key)) continue;
+      if (!isBotDriven(seat) && !isOpen(seat)) continue; // human-held seats are not the pool's work
       if (!exhausted.has(key)) active++;
     }
     return active === 0;

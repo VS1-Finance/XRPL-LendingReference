@@ -63,6 +63,10 @@ export function isBotDriven(seat: Seat): boolean {
   return seat.occupant.kind === "bot";
 }
 
+export function isOpen(seat: Seat): boolean {
+  return seat.occupant.kind === "open";
+}
+
 export function isHumanHeld(seat: Seat): boolean {
   return seat.occupant.kind === "human";
 }

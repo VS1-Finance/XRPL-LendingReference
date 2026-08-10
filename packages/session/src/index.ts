@@ -8,6 +8,7 @@ export {
   release,
   fillWithBot,
   isBotDriven,
+  isOpen,
   isHumanHeld,
   SeatOccupancyError,
 } from "./seat.js";
