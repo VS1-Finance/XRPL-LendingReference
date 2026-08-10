@@ -67,4 +67,12 @@ describe("requestLoan authorization guards", () => {
     );
     await expectActionError(() => requestLoan(s, "borrower:0", { principal: "100" }, "alice"), 409, /already has an active loan/);
   });
+
+  it("400s on an invalid term before reaching the ledger", async () => {
+    // paymentTotal is guarded as a positive integer; 0 (or any non-integer) must be a clean 400, not a
+    // malformed transaction the ledger rejects opaquely. Runs after the one-loan check, before autofill.
+    const s = fakeSession([seat("borrower", 0, { kind: "human", id: "alice" }), seat("owner", 0, { kind: "bot" })]);
+    await expectActionError(() => requestLoan(s, "borrower:0", { principal: "100", paymentTotal: "0" }, "alice"), 400, /invalid term/);
+    await expectActionError(() => requestLoan(s, "borrower:0", { principal: "100", paymentTotal: "2.5" }, "alice"), 400, /invalid term/);
+  });
 });

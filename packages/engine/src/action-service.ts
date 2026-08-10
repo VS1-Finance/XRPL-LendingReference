@@ -199,6 +199,7 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
   if (!borrowerSeat) throw new ActionError(`session has no seat ${params.borrower}`, 404);
   if (borrowerSeat.role !== "borrower") throw new ActionError(`${borrowerSeat.role} seat cannot be a loan counterparty`, 409);
 
+  const term = paymentTotal(params.paymentTotal);
   const loanSet = {
     TransactionType: "LoanSet" as const,
     Account: owner.address,
@@ -209,6 +210,7 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
     InterestRate: Number(params.interestRate ?? 50000),
     PaymentInterval: Number(params.interval ?? 60),
     GracePeriod: Number(params.grace ?? 60),
+    ...(term !== undefined ? { PaymentTotal: term } : {}),
     LoanOriginationFee: "0",
   };
 
@@ -254,6 +256,7 @@ export async function requestLoan(session: Session, borrowerSeatKey: string, par
     throw new ActionError("borrower already has an active loan", 409);
   }
 
+  const term = paymentTotal(params.paymentTotal);
   const loanSet = {
     TransactionType: "LoanSet" as const,
     Account: owner.address,
@@ -263,6 +266,7 @@ export async function requestLoan(session: Session, borrowerSeatKey: string, par
     InterestRate: Number(params.interestRate ?? 50000),
     PaymentInterval: Number(params.interval ?? 60),
     GracePeriod: Number(params.grace ?? 60),
+    ...(term !== undefined ? { PaymentTotal: term } : {}),
     LoanOriginationFee: "0",
   };
 
@@ -317,6 +321,17 @@ function assetAmount(session: Session, value: string): Amount {
 function brokerValue(session: Session, value: string): string {
   const v = requireAmount(value);
   return isXrp(session) ? xrpToDrops(v) : v;
+}
+
+// The term length (LoanSet.PaymentTotal) is a plain count of scheduled payments — NOT an asset amount,
+// so it never runs through brokerValue/xrpToDrops. Omitted means the ledger derives the schedule; when
+// supplied it must be a positive integer, or Number("") → NaN would submit a malformed transaction the
+// ledger rejects opaquely. Turn a bad count into a clean 400 here.
+function paymentTotal(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0) throw new ActionError(`invalid term: ${value}`, 400);
+  return n;
 }
 
 // The credential type for a credential/domain action: the request's explicit value, or the session's
