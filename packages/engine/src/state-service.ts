@@ -1,4 +1,4 @@
-import { dropsToXrpString } from "@lending/shared";
+import { dropsToXrpString, ledgerTimeSeconds } from "@lending/shared";
 import { isPermissioned } from "@lending/bootstrap";
 import type { Session } from "@lending/session";
 
@@ -30,10 +30,6 @@ export interface SessionState {
 const LSF_LOAN_DEFAULTED = 0x00010000;
 const LSF_CREDENTIAL_ACCEPTED = 0x00010000;
 
-// The XRP Ledger epoch (2000-01-01) that ledger time fields are measured from.
-const RIPPLE_EPOCH = 946684800;
-const nowRipple = (): number => Math.floor(Date.now() / 1000) - RIPPLE_EPOCH;
-
 export async function readSessionState(session: Session): Promise<SessionState> {
   // Whether the session asset is native XRP, so on-ledger drops amounts can be shown as whole XRP.
   const isXrp = session.env.asset.currency === "XRP" && !session.env.asset.issuer;
@@ -49,6 +45,10 @@ export async function readSessionState(session: Session): Promise<SessionState> 
   const sharesTotal = await shareOutstanding(session, session.env.objects.shareMptId);
 
   const loans = [];
+  // "Now" is the ledger's last-validated close time, the same clock the loan-default bots use, so the
+  // UI's "defaultable in Xs" countdown agrees with what the ledger enforces. Read once for the whole
+  // projection so every loan is measured against one consistent time.
+  const now = await ledgerTimeSeconds(session.client);
   for (const b of session.env.accounts.borrowers) {
     const res = await session.client.request({ command: "account_objects", account: b.address, type: "loan", ledger_index: "validated" });
     for (const loan of res.result.account_objects as unknown as Record<string, unknown>[]) {
@@ -57,7 +57,7 @@ export async function readSessionState(session: Session): Promise<SessionState> 
       // A loan may be defaulted only once its next payment is overdue past the grace period. Compute
       // whether that moment has passed, and if not, how long until it does.
       const defaultableAt = Number(loan.NextPaymentDueDate ?? 0) + Number(loan.GracePeriod ?? 0);
-      const secondsUntil = defaultableAt - nowRipple();
+      const secondsUntil = defaultableAt - now;
       const defaultableNow = !defaulted && paymentRemaining > 0 && defaultableAt > 0 && secondsUntil <= 0;
       loans.push({
         loanId: String(loan.index),

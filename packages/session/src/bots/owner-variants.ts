@@ -1,12 +1,8 @@
 import { signLoanSetByCounterparty, type Client } from "xrpl";
-import { deriveAccount } from "@lending/shared";
+import { deriveAccount, ledgerTimeSeconds } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
 import { brokerValue, loanNode, ownerLoanId, maxOriginatable } from "./reads.js";
-
-// The XRP Ledger epoch (2000-01-01) that ledger time fields are measured from.
-const RIPPLE_EPOCH = 946684800;
-const nowRipple = (): number => Math.floor(Date.now() / 1000) - RIPPLE_EPOCH;
 
 // tfLoanDefault on LoanManage.
 const TF_LOAN_DEFAULT = 65536;
@@ -115,6 +111,9 @@ const LSF_LOAN_DEFAULTED = 0x00010000;
 // Find a loan — held under a borrower's account — that is past its due window with a payment still
 // outstanding. Loan objects live in the borrower's directory, so each borrower is scanned.
 async function delinquentLoanId(client: Client, borrowers: string[]): Promise<string | undefined> {
+  // "Now" is the ledger's own last-validated close time, not the host wall clock, so this bot's view
+  // of lateness matches what the ledger enforces. Read once so every loan in this pass uses one time.
+  const now = await ledgerTimeSeconds(client);
   for (const borrower of borrowers) {
     const res = await client.request({ command: "account_objects", account: borrower, type: "loan", ledger_index: "validated" });
     const loans = res.result.account_objects as unknown as Record<string, unknown>[];
@@ -125,7 +124,7 @@ async function delinquentLoanId(client: Client, borrowers: string[]): Promise<st
       // the grace window is added before the loan is considered defaultable.
       const due = Number(loan.NextPaymentDueDate ?? 0);
       const grace = Number(loan.GracePeriod ?? 0);
-      if (due && nowRipple() > due + grace) {
+      if (due && now > due + grace) {
         const node = await loanNode(client, String(loan.index));
         if (node && Number(node.PaymentRemaining ?? 0) > 0) return String(loan.index);
       }

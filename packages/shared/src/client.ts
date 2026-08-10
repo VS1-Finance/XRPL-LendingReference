@@ -320,3 +320,13 @@ export async function accountObjects(
   const res = await client.request(request);
   return res.result.account_objects as unknown as Record<string, unknown>[];
 }
+
+// The last-validated ledger's close time, in seconds since the Ripple epoch — the same unit as a
+// loan's NextPaymentDueDate and GracePeriod. Bots and default-timing checks compare against this
+// rather than the host wall clock, so "is this loan late/defaultable yet?" is decided by ledger state
+// (what the ledger itself enforces), not by machine time. close_time is already in Ripple-epoch
+// seconds, so it is returned as-is — no RIPPLE_EPOCH adjustment.
+export async function ledgerTimeSeconds(client: Client): Promise<number> {
+  const res = await client.request({ command: "ledger", ledger_index: "validated" });
+  return Number((res.result as { ledger: { close_time: number } }).ledger.close_time);
+}
