@@ -10,6 +10,8 @@
   "packageManager": "pnpm@10.0.0",
   "scripts": {
     "typecheck": "tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "bootstrap": "tsx packages/bootstrap/src/cli.ts",
     "lifecycle": "tsx packages/lifecycle/src/cli.ts",
     "ingester": "tsx packages/ingester/src/cli.ts",
@@ -21,10 +23,16 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["@prisma/client", "@prisma/engines", "esbuild", "prisma"],
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "esbuild",
+      "prisma"
+    ],
     "overrides": {
       "xrpl": "5.1.0-batch.1"
     }
