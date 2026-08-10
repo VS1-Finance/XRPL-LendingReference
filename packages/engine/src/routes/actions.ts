@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { SessionService } from "../session-service.js";
-import { ActionError, dispatchAction, originate, type ActionRequest } from "../action-service.js";
+import { ActionError, dispatchAction, originate, requestLoan, type ActionRequest } from "../action-service.js";
 
 // The single action endpoint. Every human action against a seat — deposit, withdraw, repay,
 // originate — arrives here; the engine confirms the seat is held by the requesting participant,
@@ -17,11 +17,14 @@ export function registerActionRoutes(app: FastifyInstance, sessions: SessionServ
       if (!seat || !action) return reply.code(400).send({ error: "seat and action are required" });
 
       try {
-        // Origination is bilateral and takes its own path; everything else is a single-signer submit.
+        // Origination is bilateral and takes its own path (owner-initiated, or borrower-initiated via
+        // request-loan); everything else is a single-signer submit.
         const result =
           action === "originate"
             ? await originate(session, seat, params ?? {}, participant)
-            : await dispatchAction(session, { seat, action, ...(params ? { params } : {}) }, participant);
+            : action === "request-loan"
+              ? await requestLoan(session, seat, params ?? {}, participant)
+              : await dispatchAction(session, { seat, action, ...(params ? { params } : {}) }, participant);
 
         // Record the human action in the session log, whatever its ledger result — a rejection is as
         // much a part of the record as a success.
