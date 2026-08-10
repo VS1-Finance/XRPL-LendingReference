@@ -231,6 +231,59 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
   }
 }
 
+// Borrower-initiated origination. Same bilateral LoanSet as originate() — Account is still the broker
+// owner (the sender/first signer), Counterparty is the borrower — but the CALLER holds the borrower
+// seat and the engine resolves the single owner seat itself, signing the owner's side on their behalf.
+export async function requestLoan(session: Session, borrowerSeatKey: string, params: Record<string, string>, participant: string): Promise<ActionResult> {
+  const borrowerSeat = session.seats.get(borrowerSeatKey);
+  if (!borrowerSeat) throw new ActionError(`session has no seat ${borrowerSeatKey}`, 404);
+  if (borrowerSeat.occupant.kind !== "human" || borrowerSeat.occupant.id !== participant) {
+    throw new ActionError(`${borrowerSeatKey} is not held by ${participant}`, 409);
+  }
+  if (borrowerSeat.role !== "borrower") throw new ActionError("only a borrower seat can request a loan", 409);
+
+  const owner = [...session.seats.values()].find((s) => s.role === "owner");
+  if (!owner) throw new ActionError("session has no owner seat", 404);
+
+  // One loan per borrower at a time: reject a request while the borrower still holds a loan object,
+  // mirroring the bots' implicit one-per-borrower behaviour.
+  const existing = await session.client.request({
+    command: "account_objects", account: borrowerSeat.address, type: "loan",
+  });
+  if (existing.result.account_objects.length > 0) {
+    throw new ActionError("borrower already has an active loan", 409);
+  }
+
+  const loanSet = {
+    TransactionType: "LoanSet" as const,
+    Account: owner.address,
+    LoanBrokerID: session.env.objects.brokerId!,
+    Counterparty: borrowerSeat.address,
+    PrincipalRequested: brokerValue(session, required(params, "principal")),
+    InterestRate: Number(params.interestRate ?? 50000),
+    PaymentInterval: Number(params.interval ?? 60),
+    GracePeriod: Number(params.grace ?? 60),
+    LoanOriginationFee: "0",
+  };
+
+  // The owner index comes from the resolved owner seat and the borrower index from the caller's seat,
+  // so both wallets bind to the right accounts. Owner signs first, borrower counter-signs — the same
+  // bilateral order originate() uses; the engine holds both keys, so no human owner need be present.
+  const ownerWallet = deriveAccount(session.seed, "owner", owner.index).wallet;
+  const borrowerWallet = deriveAccount(session.seed, "borrower", borrowerSeat.index).wallet;
+  try {
+    const prepared = await session.client.autofill(loanSet);
+    const ownerSigned = ownerWallet.sign(prepared);
+    const combined = signLoanSetByCounterparty(borrowerWallet, ownerSigned.tx_blob);
+    const res = await session.client.submitAndWait(combined.tx_blob);
+    const meta = res.result.meta;
+    const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";
+    return { action: "request-loan", code, hash: res.result.hash };
+  } catch (err) {
+    asClientError(err);
+  }
+}
+
 // Whether the vault asset is native XRP (currency "XRP" with no issuer) rather than an issued token.
 function isXrp(session: Session): boolean {
   const { currency, issuer } = session.env.asset;
