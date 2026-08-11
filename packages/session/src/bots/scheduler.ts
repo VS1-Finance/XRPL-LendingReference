@@ -1,8 +1,16 @@
-import { sleep } from "@lending/shared";
+import { waitForLedgerAdvance } from "@lending/shared";
 import type { Session } from "../session.js";
 import { fillWithBot, isBotDriven, isOpen, keyOf } from "../seat.js";
+import type { Seat } from "../seat.js";
 import type { BotVariant } from "./variant.js";
 import { assignAutomatically, type VariantAssignment } from "./assignment.js";
+
+// Order seats by role then numeric index — identical to buildSeats' insertion order at any pool size,
+// but pinned explicitly so a future change to how seats are populated can't silently reorder actions.
+// A plain string-key sort (e.g. "depositor:10" vs "depositor:2") would diverge from insertion order
+// lexicographically once a role has 10+ seats, so the index must compare numerically, not as text.
+const bySeat = (a: Seat, b: Seat): number =>
+  a.role === b.role ? a.index - b.index : a.role.localeCompare(b.role);
 
 export interface SchedulerOptions {
   // The variants a bot pool may run. Spread across seats automatically unless an explicit
@@ -55,7 +63,12 @@ export class BotScheduler {
       // Self-heal: a seat a human released mid-run is now "open". If it has a variant assigned,
       // promote it back to bot control so the pool resumes driving it this same round. Clear any
       // stand-down bookkeeping for that seat so a returned seat starts with a clean slate.
-      for (const seat of this.session.seats.values()) {
+      // Iterate a stably-sorted snapshot (role, then numeric index) rather than raw Map order. Map
+      // insertion order is already deterministic today, so this is behaviorally a no-op — but it pins
+      // the guarantee explicitly so a future change to how seats are populated cannot silently reorder
+      // bot actions.
+      const orderedSeatsHeal = [...this.session.seats.values()].sort(bySeat);
+      for (const seat of orderedSeatsHeal) {
         const key = keyOf(seat);
         if (isOpen(seat) && assignment.get(key)) {
           fillWithBot(seat);
@@ -63,7 +76,8 @@ export class BotScheduler {
           exhausted.delete(key);
         }
       }
-      for (const seat of this.session.seats.values()) {
+      const orderedSeats = [...this.session.seats.values()].sort(bySeat);
+      for (const seat of orderedSeats) {
         if (!this.running) break;
         if (!isBotDriven(seat)) continue; // a human holds this seat — stand down
         const key = keyOf(seat);
@@ -97,7 +111,11 @@ export class BotScheduler {
         log(`all bot seats have stood down — stopping after round ${round}`);
         break;
       }
-      if (this.running) await sleep(interval);
+      // Pace on ledger progression, not the host wall clock, so two runs with the same seed observe
+      // ledger state at the same logical points — the basis of deterministic bot behavior. Advance at
+      // least one validated ledger between rounds; intervalSeconds bounds the wait so a stalled network
+      // cannot wedge the pool.
+      if (this.running) await waitForLedgerAdvance(this.session.client, { minLedgers: 1, timeoutMs: interval });
     }
   }
 

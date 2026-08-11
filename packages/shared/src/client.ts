@@ -330,3 +330,31 @@ export async function ledgerTimeSeconds(client: Client): Promise<number> {
   const res = await client.request({ command: "ledger", ledger_index: "validated" });
   return Number((res.result as { ledger: { close_time: number } }).ledger.close_time);
 }
+
+// Wait until the validated ledger has advanced by at least `minLedgers` beyond where it was when
+// called, or until `timeoutMs` elapses (whichever first). Used to pace the bot scheduler on ledger
+// progression rather than the host wall clock, so two runs with the same seed sample ledger state at
+// the same logical points. Resolves with the current validated ledger index; a timeout resolves too
+// (never throws) so a stalled network cannot wedge the caller. Polls `ledger_current`.
+export async function waitForLedgerAdvance(
+  client: Client,
+  opts: { minLedgers?: number; timeoutMs?: number; pollMs?: number } = {},
+): Promise<number> {
+  const minLedgers = opts.minLedgers ?? 1;
+  const timeoutMs = opts.timeoutMs ?? 15000;
+  const pollMs = opts.pollMs ?? 1000;
+  const readIndex = async (): Promise<number> =>
+    ((await client.request({ command: "ledger_current" })).result as { ledger_current_index: number }).ledger_current_index;
+  const start = await readIndex();
+  const deadline = Date.now() + timeoutMs;
+  let current = start;
+  while (current < start + minLedgers && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, pollMs));
+    try {
+      current = await readIndex();
+    } catch {
+      // transient read failure — keep polling until the deadline
+    }
+  }
+  return current;
+}

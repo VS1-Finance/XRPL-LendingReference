@@ -6,17 +6,29 @@ import type { Seat, Occupant } from "../seat.js";
 import { seatKey } from "../seat.js";
 
 // A minimal seat: the scheduler reads role/index/occupant and passes the seat to variant.tick. The
-// signer/address/client are never touched by the scheduler loop, so they are stubbed.
+// signer/address are never touched by the scheduler loop, so they are stubbed.
 function makeSeat(role: Seat["role"], index: number, occupant: Occupant): Seat {
   return { role, index, occupant, address: `r${role}${index}`, signer: {} as Seat["signer"] };
 }
 
-// A fake session carrying only what the scheduler uses: the seats map. `client`/`env` are never read
-// by the scheduler itself (variants read them, and here the variant is a stub).
+// A fake ledger_current index that advances by one on every request, so the scheduler's inter-round
+// waitForLedgerAdvance resolves immediately instead of idling out to its (test-irrelevant) timeout.
+function fakeClient(): Session["client"] {
+  let idx = 1000;
+  return {
+    request: async (req: { command: string }) => {
+      if (req.command === "ledger_current") return { result: { ledger_current_index: idx++ } };
+      throw new Error(`unexpected request in scheduler test: ${req.command}`);
+    },
+  } as unknown as Session["client"];
+}
+
+// A fake session carrying only what the scheduler uses: the seats map, and a fake client for the
+// inter-round ledger wait (variants read state through their own stubs, not this client).
 function makeSession(seats: Seat[]): Session {
   const map = new Map<string, Seat>();
   for (const s of seats) map.set(seatKey(s.role, s.index), s);
-  return { seats: map } as unknown as Session;
+  return { seats: map, client: fakeClient() } as unknown as Session;
 }
 
 // A variant that records each tick and (optionally) mutates seat occupancy or stops the run, so a test
