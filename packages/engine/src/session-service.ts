@@ -18,6 +18,27 @@ export class CapacityError extends Error {
   }
 }
 
+// A request field is the wrong shape — a client error (400), distinct from a capacity conflict (409)
+// or an on-ledger failure (500). Thrown before any provisioning so a bad request fails fast rather
+// than funding a whole environment and then erroring.
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
+
+// Resolve the effective bot seed from an untyped request field. The route has no JSON schema, so
+// botSeed may arrive as any JSON type; a non-string is rejected here (before provisioning) rather than
+// crashing on `.trim()` after a full environment is funded. A blank/absent seed generates a short
+// legible one from the session token so it is easy to read off the Info tab and re-enter.
+export function resolveBotSeed(botSeed: unknown, token: string): string {
+  if (botSeed !== undefined && typeof botSeed !== "string") {
+    throw new ValidationError("botSeed must be a string");
+  }
+  return botSeed?.trim() || `seed-${createHash("sha256").update(token).digest("hex").slice(0, 8)}`;
+}
+
 function clampPool(requested: number | undefined, fallback: number): number {
   const n = typeof requested === "number" && Number.isFinite(requested) ? Math.round(requested) : fallback;
   return Math.max(1, Math.min(MAX_POOL, n));
@@ -89,6 +110,8 @@ export class SessionService {
     onStep?: (record: StepRecord) => void;
   } = {}): Promise<SessionSummary> {
     const token = this.uniqueToken(opts.label);
+    // Resolve the bot seed up front so a malformed value is a fast 400, not a 500 after a full provision.
+    const botSeed = resolveBotSeed(opts.botSeed, token);
     const config: Config = {
       ...this.baseConfig,
       seed: `${this.baseConfig.seed}-${token}`,
@@ -126,9 +149,6 @@ export class SessionService {
     this.registry.register(session);
     this.tokens.set(session.setupId, token);
     if (opts.scenario) this.scenarios.set(session.setupId, opts.scenario);
-    // Use the supplied seed if non-blank, else generate a short legible one from the session token so
-    // it is easy to read off the Info tab and re-enter to reproduce the variant assignment.
-    const botSeed = opts.botSeed?.trim() || `seed-${createHash("sha256").update(token).digest("hex").slice(0, 8)}`;
     this.botSeeds.set(session.setupId, botSeed);
 
     const summary = this.summaryOf(session.setupId)!;
@@ -201,23 +221,27 @@ export class SessionService {
   }
 
   list(): SessionSummary[] {
-    return this.registry.list();
+    return this.registry.list().map((s) => this.overlay(s));
   }
 
   get(setupId: string): Session | undefined {
     return this.registry.get(setupId);
   }
 
-  summaryOf(setupId: string): SessionSummary | undefined {
-    const summary = this.registry.list().find((s) => s.setupId === setupId);
-    if (summary) {
-      // The registry summary is built from the Session, which does not carry the scenario or bot seed;
-      // overlay them from the per-session maps so every read (create, GET /sessions/:id, the SSE done
-      // event) reports the real values, not just the moment right after create.
-      summary.scenario = this.scenarios.get(setupId);
-      summary.botSeed = this.botSeeds.get(setupId);
-    }
+  // Attach the scenario and bot seed (held in per-session maps, not on the Session) onto a freshly-built
+  // registry summary. Every summary read goes through here so list() and summaryOf() agree.
+  private overlay(summary: SessionSummary): SessionSummary {
+    summary.scenario = this.scenarios.get(summary.setupId);
+    summary.botSeed = this.botSeeds.get(summary.setupId);
     return summary;
+  }
+
+  summaryOf(setupId: string): SessionSummary | undefined {
+    // The registry summary is built from the Session, which does not carry the scenario or bot seed;
+    // overlay() attaches them so every read (create, GET /sessions/:id, the SSE done event) reports the
+    // real values, not just the moment right after create.
+    const summary = this.registry.list().find((s) => s.setupId === setupId);
+    return summary ? this.overlay(summary) : undefined;
   }
 
   registryHandle(): SessionRegistry {
