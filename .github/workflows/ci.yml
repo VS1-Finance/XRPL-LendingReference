@@ -12,9 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # pnpm version comes from the "packageManager" field in package.json — do not also pass a version
+      # here, or action-setup errors with "Multiple versions of pnpm specified".
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -41,9 +41,9 @@ jobs:
       XRP_TREASURY_SEED: ${{ secrets.XRP_TREASURY_SEED }}
     steps:
       - uses: actions/checkout@v4
+      # pnpm version comes from the "packageManager" field in package.json — do not also pass a version
+      # here, or action-setup errors with "Multiple versions of pnpm specified".
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
