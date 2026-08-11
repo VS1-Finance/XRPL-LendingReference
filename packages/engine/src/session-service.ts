@@ -39,6 +39,51 @@ export function resolveBotSeed(botSeed: unknown, token: string): string {
   return botSeed?.trim() || `seed-${createHash("sha256").update(token).digest("hex").slice(0, 8)}`;
 }
 
+// Validate and normalize the session's default loan terms from untyped request fields, BEFORE any
+// provisioning, so a bad value is a fast 400 rather than a surprise at first origination. Returns the
+// stored shape (interestRate already scaled to the ledger's integer). Every field is optional; an
+// omitted field simply has no session default and falls back to the engine's hardcoded value.
+export function resolveLoanDefaults(opts: {
+  interestRatePercent?: unknown;
+  paymentInterval?: unknown;
+  gracePeriod?: unknown;
+  paymentTotal?: unknown;
+}): NonNullable<SessionSummary["loanDefaults"]> {
+  const out: NonNullable<SessionSummary["loanDefaults"]> = {};
+  const num = (v: unknown, name: string): number | undefined => {
+    if (v === undefined || v === null || v === "") return undefined;
+    const n = Number(v);
+    if (!Number.isFinite(n)) throw new ValidationError(`${name} must be a number`);
+    return n;
+  };
+  const ratePct = num(opts.interestRatePercent, "interestRate");
+  if (ratePct !== undefined) {
+    if (ratePct < 0 || ratePct > 100) throw new ValidationError("interestRate must be between 0 and 100 (percent)");
+    out.interestRate = Math.round(ratePct * 1000);
+  }
+  const interval = num(opts.paymentInterval, "paymentInterval");
+  if (interval !== undefined) {
+    if (!Number.isInteger(interval) || interval < 60) throw new ValidationError("paymentInterval must be an integer >= 60");
+    out.paymentInterval = interval;
+  }
+  const grace = num(opts.gracePeriod, "gracePeriod");
+  if (grace !== undefined) {
+    if (!Number.isInteger(grace) || grace < 0) throw new ValidationError("gracePeriod must be a non-negative integer");
+    out.gracePeriod = grace;
+  }
+  const term = num(opts.paymentTotal, "paymentTotal");
+  if (term !== undefined) {
+    if (!Number.isInteger(term) || term <= 0) throw new ValidationError("paymentTotal must be a positive integer");
+    out.paymentTotal = term;
+  }
+  // grace <= interval only enforceable when both are given here; if one comes from a per-origination
+  // value the ledger still guards it. Check the pair when both are session defaults.
+  if (out.gracePeriod !== undefined && out.paymentInterval !== undefined && out.gracePeriod > out.paymentInterval) {
+    throw new ValidationError("gracePeriod cannot exceed paymentInterval");
+  }
+  return out;
+}
+
 function clampPool(requested: number | undefined, fallback: number): number {
   const n = typeof requested === "number" && Number.isFinite(requested) ? Math.round(requested) : fallback;
   return Math.max(1, Math.min(MAX_POOL, n));
@@ -74,6 +119,9 @@ export class SessionService {
   // in-memory for the process lifetime only, and lost on restart — matching `scenarios`; a reloaded
   // session falls back to the base seed and is not byte-reproducible after a restart.
   private readonly botSeeds = new Map<string, string>();
+  // Default loan terms for each session, applied at origination when a field is left blank. Held in
+  // memory for the process lifetime, like scenarios/botSeeds.
+  private readonly loanDefaults = new Map<string, NonNullable<SessionSummary["loanDefaults"]>>();
 
   constructor(
     private readonly baseConfig: Config,
@@ -104,6 +152,13 @@ export class SessionService {
     // omitted a fresh seed is generated and stored. Only the variant mix is reproducible — not action
     // timing (live-ledger reads and close timing still vary).
     botSeed?: string;
+    // Default loan terms applied at origination when a field is left blank. interestRatePercent is a
+    // human percent (converted to the ledger's scaled integer); interval/grace are seconds; paymentTotal
+    // is a payment count.
+    interestRatePercent?: number;
+    paymentInterval?: number;
+    gracePeriod?: number;
+    paymentTotal?: number;
     // Whether the vault is permissioned (domain-gated, the default) or public (open, no domain and no
     // credentials). Omit or true → permissioned; false → public.
     permissioned?: boolean;
@@ -112,6 +167,7 @@ export class SessionService {
     const token = this.uniqueToken(opts.label);
     // Resolve the bot seed up front so a malformed value is a fast 400, not a 500 after a full provision.
     const botSeed = resolveBotSeed(opts.botSeed, token);
+    const loanDefaults = resolveLoanDefaults(opts);
     const config: Config = {
       ...this.baseConfig,
       seed: `${this.baseConfig.seed}-${token}`,
@@ -150,6 +206,7 @@ export class SessionService {
     this.tokens.set(session.setupId, token);
     if (opts.scenario) this.scenarios.set(session.setupId, opts.scenario);
     this.botSeeds.set(session.setupId, botSeed);
+    if (Object.keys(loanDefaults).length > 0) this.loanDefaults.set(session.setupId, loanDefaults);
 
     const summary = this.summaryOf(session.setupId)!;
     await this.store.saveSession(
@@ -233,6 +290,7 @@ export class SessionService {
   private overlay(summary: SessionSummary): SessionSummary {
     summary.scenario = this.scenarios.get(summary.setupId);
     summary.botSeed = this.botSeeds.get(summary.setupId);
+    summary.loanDefaults = this.loanDefaults.get(summary.setupId);
     return summary;
   }
 
@@ -256,6 +314,11 @@ export class SessionService {
   // The bot scenario chosen for a session, if any — used to weight the pool when it starts.
   scenarioFor(setupId: string): string | undefined {
     return this.scenarios.get(setupId);
+  }
+
+  // The session's default loan terms, if any — merged into origination params for blank fields.
+  loanDefaultsFor(setupId: string): SessionSummary["loanDefaults"] {
+    return this.loanDefaults.get(setupId);
   }
 
   // Claim a seat and persist the new occupancy. A participant holds one seat at a time, so any other

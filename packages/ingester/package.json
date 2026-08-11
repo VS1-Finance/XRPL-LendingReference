@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@lending/shared": "workspace:*",
-    "@prisma/client": "^6.1.0",
+    "@prisma/client": "^6.19.3",
     "xrpl": "5.1.0-batch.1"
   },
   "devDependencies": {
