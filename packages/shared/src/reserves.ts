@@ -26,7 +26,10 @@ export async function readReserveRates(client: Client): Promise<ReserveRates> {
 
 // The shape of the vault that determines how many objects each role owns.
 export interface VaultShape {
-  // Native XRP (no trust lines) versus an issued token (each holder and the owner hold a trust line).
+  // Native XRP (no trust lines/MPTokens) versus a non-XRP asset (each holder and the owner hold one
+  // extra owner-count-reserving object for the vault asset itself: a trust line for an IOU, or an
+  // MPToken for an MPT vault — both cost exactly one reserved unit, so MPT shares this same false
+  // value with IOU below).
   isXrp: boolean;
   // A permissioned vault gates access with a domain and per-holder credentials.
   permissioned: boolean;

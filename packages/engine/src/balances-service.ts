@@ -1,8 +1,14 @@
-import { dropsToXrpString } from "@lending/shared";
+import { dropsToXrpString, scaledToDecimal } from "@lending/shared";
 import type { Session } from "@lending/session";
 
+// Decimal places the vault-asset MPT issuance is created at. Mirrors MPT_ASSET_SCALE in
+// bootstrap/steps.ts — kept here too since balances are read directly off the ledger as raw integers
+// and need the same scale to render a whole-token display string.
+const MPT_ASSET_SCALE = 2;
+
 // A participant account's on-ledger holdings, read live from the validated ledger: its XRP, the vault
-// asset it holds (for an IOU vault), and the vault shares it holds. This is what the wallet UI renders.
+// asset it holds (for an IOU or MPT vault), and the vault shares it holds. This is what the wallet UI
+// renders.
 export interface AccountBalance {
   seat: string;
   role: string;
@@ -22,6 +28,8 @@ export interface SessionBalances {
 export async function readBalances(session: Session): Promise<SessionBalances> {
   const { currency, issuer } = session.env.asset;
   const isXrp = currency === "XRP" && !issuer;
+  const isMpt = currency === "MPT";
+  const assetMptId = session.env.objects.assetMptId;
   const shareMptId = session.env.objects.shareMptId;
 
   const seats = [...session.seats.values()];
@@ -29,7 +37,13 @@ export async function readBalances(session: Session): Promise<SessionBalances> {
     seats.map(async (seat) => {
       const [xrp, assetHeld, shares] = await Promise.all([
         readXrp(session, seat.address),
-        isXrp || !issuer ? Promise.resolve("0") : readIssued(session, seat.address, currency, issuer),
+        isMpt
+          ? assetMptId
+            ? readMptAsset(session, seat.address, assetMptId)
+            : Promise.resolve("0")
+          : isXrp || !issuer
+            ? Promise.resolve("0")
+            : readIssued(session, seat.address, currency, issuer),
         shareMptId ? readShares(session, seat.address, shareMptId) : Promise.resolve("0"),
       ]);
       return { seat: `${seat.role}:${seat.index}`, role: seat.role, address: seat.address, xrp, assetHeld, shares };
@@ -55,6 +69,22 @@ async function readIssued(session: Session, holder: string, currency: string, is
     const res = await session.client.request({ command: "account_lines", account: holder, peer: issuer, ledger_index: "validated" });
     const line = (res.result.lines as { currency: string; balance: string }[]).find((l) => l.currency === currency);
     return line?.balance ?? "0";
+  } catch (err) {
+    if (isAccountNotFound(err)) return "0";
+    throw err;
+  }
+}
+
+// The holder's balance of the vault's MPT asset, as a whole-token decimal string (the raw on-ledger
+// MPTAmount is a base-unit integer at MPT_ASSET_SCALE, scaled down to match the IOU display convention
+// readIssued uses).
+async function readMptAsset(session: Session, holder: string, assetMptId: string): Promise<string> {
+  try {
+    const res = await session.client.request({ command: "account_objects", account: holder, type: "mptoken", ledger_index: "validated" });
+    const objs = res.result.account_objects as unknown as Record<string, unknown>[];
+    const held = objs.find((o) => o.MPTokenIssuanceID === assetMptId);
+    const raw = (held?.MPTAmount as string | undefined) ?? "0";
+    return scaledToDecimal(BigInt(raw), MPT_ASSET_SCALE);
   } catch (err) {
     if (isAccountNotFound(err)) return "0";
     throw err;

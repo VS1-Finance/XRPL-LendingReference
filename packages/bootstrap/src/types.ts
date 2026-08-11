@@ -39,6 +39,9 @@ export interface ProvisionedEnvironment {
     vaultId?: string;
     shareMptId?: string;
     brokerId?: string;
+    // The MPTokenIssuanceID of the vault ASSET for an MPT vault (distinct from shareMptId, which is
+    // the vault's own share issuance). Absent for an XRP or IOU vault.
+    assetMptId?: string;
   };
   steps: StepRecord[];
 }

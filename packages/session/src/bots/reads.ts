@@ -1,5 +1,5 @@
-import { xrpToDrops, type Amount, type Client } from "xrpl";
-import { clampIssuedValueUp, dropsToXrpString } from "@lending/shared";
+import { xrpToDrops, type Amount, type Client, type MPTAmount } from "xrpl";
+import { clampIssuedValueUp, decimalToScaled, dropsToXrpString, scaledToDecimal } from "@lending/shared";
 import type { Session } from "../session.js";
 
 // Whether the session asset is native XRP (currency "XRP" with no issuer) rather than an issued token.
@@ -7,6 +7,17 @@ function isXrp(session: Session): boolean {
   const { currency, issuer } = session.env.asset;
   return currency === "XRP" && !issuer;
 }
+
+// Whether the session asset is an MPT vault asset (currency "MPT", identified by env.objects.assetMptId
+// rather than a currency/issuer pair).
+function isMpt(session: Session): boolean {
+  return session.env.asset.currency === "MPT";
+}
+
+// Decimal places the vault-asset MPT issuance is created at. Mirrors MPT_ASSET_SCALE in
+// bootstrap/steps.ts — kept here too since bots reason in whole-token units and need the same scale
+// to shape a raw integer MPT amount from a whole-token value.
+const MPT_ASSET_SCALE = 2;
 
 // Small validated-ledger reads used by bot variants to decide whether to act. Kept here so the
 // variants stay strategy-only.
@@ -75,27 +86,45 @@ function readAmount(value: unknown): string {
 }
 
 // Builds a ledger Amount for the session's asset from a whole-token value. For XRP that is a bare drops
-// string; for an issued token it is a currency/issuer/value object. Bots reason in whole-token units
-// everywhere, so this is the single point where those units become a ledger Amount.
-export function assetAmount(session: Session, value: string): Amount {
+// string; for MPT it is an mpt_issuance_id/value object with the value scaled to the issuance's raw
+// integer units; for an issued token it is a currency/issuer/value object. Bots reason in whole-token
+// units everywhere, so this is the single point where those units become a ledger Amount.
+export function assetAmount(session: Session, value: string): Amount | MPTAmount {
   if (isXrp(session)) return xrpToDrops(value);
+  if (isMpt(session)) {
+    const mptIssuanceId = session.env.objects.assetMptId;
+    if (!mptIssuanceId) throw new Error("session asset is MPT but has no assetMptId");
+    return { mpt_issuance_id: mptIssuanceId, value: decimalToScaled(value, MPT_ASSET_SCALE).toString() };
+  }
   const { currency, issuer } = session.env.asset;
   if (!issuer) throw new Error("session asset has no issuer");
   return { currency, issuer, value };
 }
 
 // A whole-token value expressed in the broker's asset units as a bare string, for fields that take a
-// plain number rather than a full Amount (the loan principal): drops for XRP, whole tokens otherwise.
+// plain number rather than a full Amount (the loan principal): drops for XRP, the issuance's raw
+// integer units for MPT, whole tokens otherwise.
 export function brokerValue(session: Session, value: string): string {
-  return isXrp(session) ? xrpToDrops(value) : value;
+  if (isXrp(session)) return xrpToDrops(value);
+  if (isMpt(session)) return decimalToScaled(value, MPT_ASSET_SCALE).toString();
+  return value;
 }
 
 // The whole-token amount to repay for a loan, from its on-ledger outstanding balance. XRP balances are
-// integer drops and convert cleanly to whole XRP; issued balances are clamped up to the ledger's
-// 15-significant-digit limit so a derived repayment never falls a sub-unit short of what is owed.
+// integer drops and convert cleanly to whole XRP; MPT balances are raw integers at MPT_ASSET_SCALE and
+// convert cleanly to whole tokens; issued balances are clamped up to the ledger's 15-significant-digit
+// limit so a derived repayment never falls a sub-unit short of what is owed.
 export function outstandingToPay(session: Session, outstanding: unknown): string {
   const ledgerValue = readAmount(outstanding);
-  return isXrp(session) ? dropsToXrpString(ledgerValue) : clampIssuedValueUp(ledgerValue);
+  if (isXrp(session)) return dropsToXrpString(ledgerValue);
+  if (isMpt(session)) return scaledMptToWhole(ledgerValue);
+  return clampIssuedValueUp(ledgerValue);
+}
+
+// Converts a raw MPT integer amount (as it appears on-ledger, e.g. TotalValueOutstanding) to a
+// whole-token decimal string, in exact integer arithmetic (no float division).
+function scaledMptToWhole(value: string): string {
+  return scaledToDecimal(BigInt(value), MPT_ASSET_SCALE);
 }
 
 // Reads a single account object of a given type from the owner's account (the vault and broker both
@@ -117,10 +146,13 @@ function readNumber(value: unknown): number {
 }
 
 // Reads a ledger amount field as a whole-token number. XRP amounts come off the ledger in drops, so
-// they are divided down to whole XRP; issued amounts are already in token units. Used by the headroom
-// reads below so bot arithmetic stays in whole-token space regardless of asset kind.
+// they are divided down to whole XRP; MPT amounts come off the ledger as raw integers at
+// MPT_ASSET_SCALE, so they are divided down by that scale; issued amounts are already in token units.
+// Used by the headroom reads below so bot arithmetic stays in whole-token space regardless of asset kind.
 function readWholeTokens(session: Session, value: unknown): number {
-  return isXrp(session) ? readNumber(value) / 1_000_000 : readNumber(value);
+  if (isXrp(session)) return readNumber(value) / 1_000_000;
+  if (isMpt(session)) return readNumber(value) / 10 ** MPT_ASSET_SCALE;
+  return readNumber(value);
 }
 
 // The spare capacity a deposit can still fill: the vault's maximum assets minus its current total. A

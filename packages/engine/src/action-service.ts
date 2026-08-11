@@ -1,6 +1,6 @@
 import { signLoanSetByCounterparty, xrpToDrops } from "xrpl";
-import type { Amount, SubmittableTransaction } from "xrpl";
-import { clampIssuedValueUp, deriveAccount } from "@lending/shared";
+import type { Amount, MPTAmount, SubmittableTransaction } from "xrpl";
+import { clampIssuedValueUp, decimalToScaled, deriveAccount } from "@lending/shared";
 import type { Session } from "@lending/session";
 
 export interface ActionRequest {
@@ -34,11 +34,13 @@ function asClientError(err: unknown): never {
   const message = err instanceof Error ? err.message : String(err);
   // Client-caused failures: xrpl's ValidationError (malformed tx/amount), a preliminary `tem` rejection
   // (the tx never reached a ledger), and the amount-shape errors thrown while building the tx (an
-  // "illegal amount" from the IOU serializer, or clampIssuedValueUp's "not a non-negative decimal").
+  // "illegal amount" from the IOU serializer, clampIssuedValueUp's "not a non-negative decimal", or
+  // decimalToScaled's "has more than N fractional digits" — thrown by the MPT branch of assetAmount/
+  // brokerValue when a caller submits an amount with more precision than the vault asset's scale).
   if (
     name === "ValidationError" ||
     /Transaction failed, tem/.test(message) ||
-    /illegal amount|not a non-negative decimal|invalid amount/.test(message)
+    /illegal amount|not a non-negative decimal|invalid amount|has more than \d+ fractional digits/.test(message)
   ) {
     throw new ActionError(message, 400);
   }
@@ -294,10 +296,22 @@ function isXrp(session: Session): boolean {
   return currency === "XRP" && !issuer;
 }
 
+// Whether the vault asset is an MPT vault asset (currency "MPT", identified by env.objects.assetMptId
+// rather than a currency/issuer pair).
+function isMpt(session: Session): boolean {
+  return session.env.asset.currency === "MPT";
+}
+
+// Decimal places the vault-asset MPT issuance is created at. Mirrors MPT_ASSET_SCALE in
+// bootstrap/steps.ts — kept here too since actions carry whole-token request params and need the same
+// scale to shape a raw integer MPT amount from a whole-token value.
+const MPT_ASSET_SCALE = 2;
+
 // Builds a ledger Amount for the session's asset from a whole-token value. For XRP that is a bare drops
-// string; for an issued token it is a currency/issuer/value object. Every action that carries an amount
-// goes through this, so both asset kinds are handled in one place.
-// A positive decimal string. Both asset kinds ultimately reject a non-numeric amount, but the XRP path
+// string; for MPT it is an mpt_issuance_id/value object with the value scaled to the issuance's raw
+// integer units; for an issued token it is a currency/issuer/value object. Every action that carries an
+// amount goes through this, so every asset kind is handled in one place.
+// A positive decimal string. Every asset kind ultimately rejects a non-numeric amount, but the XRP path
 // throws xrpl's ValidationError while the IOU path throws an "illegal amount" serialization error deep
 // in submit — different types, both surfacing as an opaque 500. Validating the shape here turns any bad
 // amount into a clean 400 up front, regardless of vault kind.
@@ -308,19 +322,27 @@ function requireAmount(value: string): string {
   return value;
 }
 
-function assetAmount(session: Session, value: string): Amount {
+function assetAmount(session: Session, value: string): Amount | MPTAmount {
   const v = requireAmount(value);
   if (isXrp(session)) return xrpToDrops(v);
+  if (isMpt(session)) {
+    const mptIssuanceId = session.env.objects.assetMptId;
+    if (!mptIssuanceId) throw new ActionError("MPT asset has no assetMptId", 500);
+    return { mpt_issuance_id: mptIssuanceId, value: decimalToScaled(v, MPT_ASSET_SCALE).toString() };
+  }
   const { currency, issuer } = session.env.asset;
   if (!issuer) throw new ActionError("issued asset has no issuer", 500);
   return { currency, issuer, value: v };
 }
 
 // A bare numeric value in the broker's asset units, for fields (loan principal, debt max) that take a
-// plain number rather than a full Amount: drops for XRP, whole tokens otherwise.
+// plain number rather than a full Amount: drops for XRP, the issuance's raw integer units for MPT,
+// whole tokens otherwise.
 function brokerValue(session: Session, value: string): string {
   const v = requireAmount(value);
-  return isXrp(session) ? xrpToDrops(v) : v;
+  if (isXrp(session)) return xrpToDrops(v);
+  if (isMpt(session)) return decimalToScaled(v, MPT_ASSET_SCALE).toString();
+  return v;
 }
 
 // The term length (LoanSet.PaymentTotal) is a plain count of scheduled payments — NOT an asset amount,

@@ -9,6 +9,8 @@ export {
   runBatch,
   trustSteps,
   distributeSteps,
+  mptAuthorizeSteps,
+  mptDistributeSteps,
   credentialCreateSteps,
   credentialAcceptSteps,
   type StepDeps,

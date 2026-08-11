@@ -10,16 +10,20 @@ import {
   fanOutFunding,
   resolveTreasury,
   generateSetupId,
+  isMptAsset,
   isXrpAsset,
   readReserveRates,
   roleReserveDrops,
 } from "@lending/shared";
 import { assertCoverMeetsMinimum, assertSingleOwner } from "./assertions.js";
+import { findMptIssuance } from "./ledger-lookups.js";
 import {
   runBatch,
   runCrossAccountBatches,
   issuerFlagSteps,
   trustAndDistributeUnits,
+  mptIssuanceSteps,
+  mptAuthorizeAndDistributeUnits,
   credentialHandshakeUnits,
   createBroker,
   createDomain,
@@ -53,7 +57,9 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
     createdAt: now(),
     asset: isXrpAsset(config.asset)
       ? { currency: "XRP" }
-      : { currency: config.asset.currency, issuer: accounts.issuer.address },
+      : isMptAsset(config.asset)
+        ? { currency: "MPT" } // the mpt_issuance_id is recorded on env.objects.assetMptId once created
+        : { currency: config.asset.currency, issuer: accounts.issuer.address },
     // A permissioned vault carries a domain and a credential type; a public vault has neither.
     ...(config.domain ? { credentialType: config.domain.acceptedCredentials[0]!.credentialType } : {}),
     accounts: {
@@ -86,7 +92,23 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
 
     // Issuer flags and asset distribution only apply to an issued token. A native-XRP vault has no
     // currency issuer, so these steps are skipped — accounts already hold XRP from funding.
-    if (!isXrpAsset(config.asset)) {
+    if (isMptAsset(config.asset)) {
+      // Batch 2 (MPT): create the vault asset's own MPT issuance (parallel to issuerFlagSteps), then
+      // read its MPTokenIssuanceID back — PlannedStep has no post-hook, so the read happens here,
+      // right after the create settles, mirroring how createVault reads back the vault's own id.
+      await runBatch(deps, mptIssuanceSteps(deps));
+      const issuance = await findMptIssuance(client, accounts.issuer.address);
+      if (!issuance) throw new Error("mpt-asset-issuance-create settled but the issuer's mpt_issuance object was not found");
+      env.objects.assetMptId = issuance.id;
+
+      // Batch 3+4 (MPT): per-holder authorize + distribution, each holder's pair as one atomic XLS-56 Batch.
+      const distHolders = [
+        { wallet: accounts.owner.wallet, label: "owner", amount: coverAndLiquidity(config) },
+        ...accounts.depositors.map((d) => ({ wallet: d.wallet, label: `depositor[${d.index}]`, amount: liquidityPerHolder(config) })),
+        ...accounts.borrowers.map((b) => ({ wallet: b.wallet, label: `borrower[${b.index}]`, amount: liquidityPerHolder(config) })),
+      ];
+      await runCrossAccountBatches(deps, mptAuthorizeAndDistributeUnits(deps, distHolders));
+    } else if (!isXrpAsset(config.asset)) {
       // Batch 2: issuer flags (chained within the issuer's sequence).
       await runBatch(deps, issuerFlagSteps(deps));
       // Batch 3+4: per-holder trust line + distribution, each holder's pair as one atomic XLS-56 Batch.

@@ -2,23 +2,37 @@ import {
   type Config,
   type DerivedAccountSet,
   correlationId,
+  decimalToScaled,
   isXrpAsset,
+  isMptAsset,
   submitBatch,
   submitNativeBatch,
   type BatchItem,
   type BatchInner,
 } from "@lending/shared";
-import { VaultCreateFlags, VaultWithdrawalPolicy, xrpToDrops, type Client, type Currency, type Wallet, type SubmittableTransaction } from "xrpl";
+import {
+  MPTokenIssuanceCreateFlags,
+  VaultCreateFlags,
+  VaultWithdrawalPolicy,
+  xrpToDrops,
+  type Client,
+  type Currency,
+  type Wallet,
+  type SubmittableTransaction,
+} from "xrpl";
 import {
   accountHasFlag,
   encodeCredentialType,
   findBrokerCover,
   findBrokerId,
   findDomainId,
+  findMptIssuance,
   findVault,
   hasAcceptedCredential,
+  hasMptAuthorization,
   hasTrustLine,
   issuedBalance,
+  mptBalance,
 } from "./ledger-lookups.js";
 import type { ProvisionedEnvironment, StepRecord } from "./types.js";
 
@@ -196,6 +210,7 @@ export function trustSteps(deps: StepDeps, holder: Wallet, role: string): Planne
 
 export function distributeSteps(deps: StepDeps, holder: Wallet, role: string, amount: string): PlannedStep[] {
   if (isXrpAsset(deps.config.asset)) return [];
+  if (isMptAsset(deps.config.asset)) return [];
   const issuer = deps.accounts.issuer.wallet;
   const currency = deps.config.asset.currency;
   return [{
@@ -205,14 +220,44 @@ export function distributeSteps(deps: StepDeps, holder: Wallet, role: string, am
   }];
 }
 
+// MPT parallel to trustSteps, for session/add-participant.ts's two-separate-runBatch runtime pattern
+// (as opposed to the atomic mptAuthorizeAndDistributeUnits pair used by provisioning). No-op for a
+// non-MPT vault.
+export function mptAuthorizeSteps(deps: StepDeps, holder: Wallet, role: string): PlannedStep[] {
+  if (!isMptAsset(deps.config.asset)) return [];
+  const mptIssuanceId = deps.env.objects.assetMptId;
+  if (!mptIssuanceId) throw new Error("mptAuthorizeSteps requires the asset MPT issuance to already exist (env.objects.assetMptId)");
+  return [{
+    action: `mpt-authorize-${role}`,
+    alreadyDone: () => hasMptAuthorization(deps.client, holder.address, mptIssuanceId),
+    build: () => ({ wallet: holder, tx: { TransactionType: "MPTokenAuthorize", Account: holder.address, MPTokenIssuanceID: mptIssuanceId } }),
+  }];
+}
+
+// MPT parallel to distributeSteps, for session/add-participant.ts's two-separate-runBatch runtime
+// pattern. `amount` is a whole-token decimal string, scaled to the issuance's raw integer units before
+// it is compared on-ledger or placed in the Payment. No-op for a non-MPT vault.
+export function mptDistributeSteps(deps: StepDeps, holder: Wallet, role: string, amount: string): PlannedStep[] {
+  if (!isMptAsset(deps.config.asset)) return [];
+  const issuer = deps.accounts.issuer.wallet;
+  const mptIssuanceId = deps.env.objects.assetMptId;
+  if (!mptIssuanceId) throw new Error("mptDistributeSteps requires the asset MPT issuance to already exist (env.objects.assetMptId)");
+  const scaledAmount = mptScaledAmount(amount);
+  return [{
+    action: `distribute-${role}`,
+    alreadyDone: async () => Number(await mptBalance(deps.client, holder.address, mptIssuanceId)) >= Number(scaledAmount),
+    build: () => ({ wallet: issuer, tx: { TransactionType: "Payment", Account: issuer.address, Destination: holder.address, Amount: { mpt_issuance_id: mptIssuanceId, value: scaledAmount } } }),
+  }];
+}
+
 // Per IOU holder (incl. owner): the TrustSet (holder) + distribute Payment (issuer) pair, as one atomic
 // BatchUnit. Idempotent when the holder already holds at least the target amount (which implies the
-// trust line exists). No-op for an XRP vault (no issuer/trust/distribute).
+// trust line exists). No-op for an XRP or MPT vault (MPT uses mptAuthorizeAndDistributeUnits instead).
 export function trustAndDistributeUnits(
   deps: StepDeps,
   holders: { wallet: Wallet; label: string; amount: string }[],
 ): BatchUnit[] {
-  if (isXrpAsset(deps.config.asset)) return [];
+  if (isXrpAsset(deps.config.asset) || isMptAsset(deps.config.asset)) return [];
   const issuer = deps.accounts.issuer.wallet;
   const currency = deps.config.asset.currency;
   return holders.map(({ wallet, label, amount }) => {
@@ -229,6 +274,110 @@ export function trustAndDistributeUnits(
         {
           action: `distribute-${label}`,
           build: () => ({ wallet: issuer, tx: { TransactionType: "Payment", Account: issuer.address, Destination: wallet.address, Amount: { currency, issuer: issuer.address, value: amount } } }),
+        },
+      ],
+    };
+  });
+}
+
+// The permissive flag set an MPT vault asset needs. A bare issuance (no flags) makes VaultCreate fail
+// tecNO_AUTH — the vault needs to lock, escrow, trade, transfer, and clawback the asset it wraps, the
+// same powers issuerFlagSteps grants an IOU issuer via AccountSet.
+const MPT_ASSET_FLAGS =
+  MPTokenIssuanceCreateFlags.tfMPTCanLock |
+  MPTokenIssuanceCreateFlags.tfMPTCanEscrow |
+  MPTokenIssuanceCreateFlags.tfMPTCanTrade |
+  MPTokenIssuanceCreateFlags.tfMPTCanTransfer |
+  MPTokenIssuanceCreateFlags.tfMPTCanClawback;
+
+// Decimal places the vault-asset MPT issuance is created at (matches AssetScale on
+// MPTokenIssuanceCreate below). MPT ledger amounts are raw integers at this scale — unlike an IOU's
+// decimal `value` string — so every whole-token config amount (coverAmount, debtMaximum, …) is scaled
+// through this before it appears in a transaction.
+export const MPT_ASSET_SCALE = 2;
+
+// Convert a whole-token decimal config value (e.g. coverAmount, debtMaximum) to the raw integer string
+// an MPT amount field expects at MPT_ASSET_SCALE.
+export function mptScaledAmount(value: string): string {
+  return decimalToScaled(value, MPT_ASSET_SCALE).toString();
+}
+
+// The vault asset's MPTokenIssuanceID, captured on the env by provision.ts right after
+// mptIssuanceSteps settles. Missing here is a programming error — createVault must run after it.
+function requireAssetMptId(deps: StepDeps): string {
+  const id = deps.env.objects.assetMptId;
+  if (!id) throw new Error("MPT vault creation requires the asset MPT issuance to already exist (env.objects.assetMptId)");
+  return id;
+}
+
+// The MaximumAmount to size the vault-asset issuance at, in raw integer units at MPT_ASSET_SCALE:
+// enough to cover the owner's seeded cover (2x coverAmount, mirroring coverAndLiquidity in
+// provision.ts) plus every depositor's and borrower's liquidity (debtMaximum each, mirroring
+// liquidityPerHolder), with a 10x headroom multiple so bot activity and re-runs never bump the
+// ceiling. Kept in integer (bigint) arithmetic throughout, consistent with money.ts conventions.
+function mptMaximumAmount(deps: StepDeps): string {
+  const cover = decimalToScaled(deps.config.coverAmount, MPT_ASSET_SCALE) * 2n;
+  const holders = BigInt(deps.config.pool.depositors + deps.config.pool.borrowers);
+  const liquidity = decimalToScaled(deps.config.debtMaximum, MPT_ASSET_SCALE) * holders;
+  const headroom = 10n;
+  return ((cover + liquidity) * headroom).toString();
+}
+
+// Parallel to issuerFlagSteps for the MPT path: one PlannedStep that creates the vault ASSET's MPT
+// issuance (not the vault's own share MPT, which VaultCreate mints separately). Idempotent — a
+// re-run finds the issuer's existing mpt_issuance object and skips. The resulting
+// MPTokenIssuanceID is not known until the create settles, so it is not captured here: provision.ts
+// reads it back via findMptIssuance immediately after running this step.
+export function mptIssuanceSteps(deps: StepDeps): PlannedStep[] {
+  const issuer = deps.accounts.issuer.wallet;
+  return [
+    {
+      action: "mpt-asset-issuance-create",
+      alreadyDone: async () => (await findMptIssuance(deps.client, issuer.address)) !== undefined,
+      build: () => ({
+        wallet: issuer,
+        tx: {
+          TransactionType: "MPTokenIssuanceCreate",
+          Account: issuer.address,
+          AssetScale: 2,
+          MaximumAmount: mptMaximumAmount(deps),
+          Flags: MPT_ASSET_FLAGS,
+        },
+      }),
+    },
+  ];
+}
+
+// Per MPT holder (incl. owner): the MPTokenAuthorize (holder) + distribute Payment (issuer) pair, as
+// one atomic BatchUnit — the MPT parallel to trustAndDistributeUnits. MPTokenAuthorize is the holder
+// opting in to hold the issuance (no Holder field: the signing account IS the holder), which is what a
+// TrustSet is for an IOU. Idempotent when the holder's MPT balance already meets the target (which
+// implies authorization already happened). No-op for a non-MPT vault. `amount` is a whole-token
+// decimal string (same convention as trustAndDistributeUnits); it is scaled to the issuance's raw
+// integer units before it is compared on-ledger or placed in the Payment.
+export function mptAuthorizeAndDistributeUnits(
+  deps: StepDeps,
+  holders: { wallet: Wallet; label: string; amount: string }[],
+): BatchUnit[] {
+  if (!isMptAsset(deps.config.asset)) return [];
+  const issuer = deps.accounts.issuer.wallet;
+  const mptIssuanceId = deps.env.objects.assetMptId;
+  if (!mptIssuanceId) throw new Error("mptAuthorizeAndDistributeUnits requires the asset MPT issuance to already exist (env.objects.assetMptId)");
+  return holders.map(({ wallet, label, amount }) => {
+    const scaledAmount = mptScaledAmount(amount);
+    const holds = async () => Number(await mptBalance(deps.client, wallet.address, mptIssuanceId)) >= Number(scaledAmount);
+    return {
+      key: `mpt-authorize-distribute-${label}`,
+      alreadyDone: holds,
+      verify: holds,
+      inners: [
+        {
+          action: `mpt-authorize-${label}`,
+          build: () => ({ wallet, tx: { TransactionType: "MPTokenAuthorize", Account: wallet.address, MPTokenIssuanceID: mptIssuanceId } }),
+        },
+        {
+          action: `distribute-${label}`,
+          build: () => ({ wallet: issuer, tx: { TransactionType: "Payment", Account: issuer.address, Destination: wallet.address, Amount: { mpt_issuance_id: mptIssuanceId, value: scaledAmount } } }),
         },
       ],
     };
@@ -321,7 +470,9 @@ export async function createVault(deps: StepDeps): Promise<void> {
 
   const asset: Currency = isXrpAsset(deps.config.asset)
     ? { currency: "XRP" }
-    : { currency: deps.config.asset.currency, issuer: deps.accounts.issuer.address };
+    : isMptAsset(deps.config.asset)
+      ? { mpt_issuance_id: requireAssetMptId(deps) }
+      : { currency: deps.config.asset.currency, issuer: deps.accounts.issuer.address };
 
   await runBatch(deps, [{
     action: "vault-create",
@@ -357,8 +508,13 @@ export async function createBroker(deps: StepDeps): Promise<void> {
         Account: owner.address,
         VaultID: vaultId,
         ManagementFeeRate: deps.config.managementFeeRate,
-        // DebtMaximum is in the broker's asset units — drops for XRP, whole tokens otherwise.
-        DebtMaximum: isXrpAsset(deps.config.asset) ? xrpToDrops(deps.config.debtMaximum) : deps.config.debtMaximum,
+        // DebtMaximum is in the broker's asset units: drops for XRP, the issuance's raw integer units
+        // (at MPT_ASSET_SCALE) for MPT, whole tokens otherwise (IOU).
+        DebtMaximum: isXrpAsset(deps.config.asset)
+          ? xrpToDrops(deps.config.debtMaximum)
+          : isMptAsset(deps.config.asset)
+            ? mptScaledAmount(deps.config.debtMaximum)
+            : deps.config.debtMaximum,
         CoverRateMinimum: deps.config.coverRateMinimum,
         CoverRateLiquidation: deps.config.coverRateLiquidation,
       },
@@ -372,17 +528,24 @@ export async function depositCover(deps: StepDeps): Promise<void> {
   const brokerId = deps.env.objects.brokerId;
   if (!brokerId) throw new Error("cannot deposit cover before the broker exists");
 
-  // Cover is deposited in the broker's asset units: drops for XRP, an issued amount otherwise. The
-  // configured coverAmount is a whole-token value, so XRP is converted to drops.
+  // Cover is deposited in the broker's asset units: drops for XRP, the issuance's raw integer units
+  // (at MPT_ASSET_SCALE) for MPT, an issued amount otherwise (IOU). The configured coverAmount is
+  // always a whole-token value, converted to match.
   const amount = isXrpAsset(deps.config.asset)
     ? xrpToDrops(deps.config.coverAmount)
-    : { currency: deps.config.asset.currency, issuer: deps.accounts.issuer.address, value: deps.config.coverAmount };
+    : isMptAsset(deps.config.asset)
+      ? { mpt_issuance_id: requireAssetMptId(deps), value: mptScaledAmount(deps.config.coverAmount) }
+      : { currency: deps.config.asset.currency, issuer: deps.accounts.issuer.address, value: deps.config.coverAmount };
 
   // Idempotent on the configured cover amount: a re-run that already holds at least that much
   // cover skips the deposit instead of stacking a second one. The on-ledger cover is in the broker's
-  // asset units — drops for XRP — so the configured whole-token amount is converted to match before
-  // comparing, otherwise an XRP broker's drops cover always dwarfs the whole-token threshold.
-  const requiredCover = isXrpAsset(deps.config.asset) ? xrpToDrops(deps.config.coverAmount) : deps.config.coverAmount;
+  // asset units — drops for XRP, raw integer units for MPT — so the configured whole-token amount is
+  // converted to match before comparing, otherwise the threshold comparison is off by the scale factor.
+  const requiredCover = isXrpAsset(deps.config.asset)
+    ? xrpToDrops(deps.config.coverAmount)
+    : isMptAsset(deps.config.asset)
+      ? mptScaledAmount(deps.config.coverAmount)
+      : deps.config.coverAmount;
   await runBatch(deps, [{
     action: "cover-deposit",
     alreadyDone: async () => {
