@@ -302,10 +302,12 @@ function isMpt(session: Session): boolean {
   return session.env.asset.currency === "MPT";
 }
 
-// Decimal places the vault-asset MPT issuance is created at. Mirrors MPT_ASSET_SCALE in
-// bootstrap/steps.ts — kept here too since actions carry whole-token request params and need the same
-// scale to shape a raw integer MPT amount from a whole-token value.
-const MPT_ASSET_SCALE = 2;
+// The scale the session's vault-asset MPT issuance was actually created at, read back from env (not
+// config or a const — a session could have been provisioned at any scale). Actions carry whole-token
+// request params and need this scale to shape a raw integer MPT amount from a whole-token value.
+function mptAssetScale(session: Session): number {
+  return session.env.objects.assetScale ?? 2;
+}
 
 // Builds a ledger Amount for the session's asset from a whole-token value. For XRP that is a bare drops
 // string; for MPT it is an mpt_issuance_id/value object with the value scaled to the issuance's raw
@@ -328,7 +330,7 @@ function assetAmount(session: Session, value: string): Amount | MPTAmount {
   if (isMpt(session)) {
     const mptIssuanceId = session.env.objects.assetMptId;
     if (!mptIssuanceId) throw new ActionError("MPT asset has no assetMptId", 500);
-    return { mpt_issuance_id: mptIssuanceId, value: decimalToScaled(v, MPT_ASSET_SCALE).toString() };
+    return { mpt_issuance_id: mptIssuanceId, value: decimalToScaled(v, mptAssetScale(session)).toString() };
   }
   const { currency, issuer } = session.env.asset;
   if (!issuer) throw new ActionError("issued asset has no issuer", 500);
@@ -341,7 +343,7 @@ function assetAmount(session: Session, value: string): Amount | MPTAmount {
 function brokerValue(session: Session, value: string): string {
   const v = requireAmount(value);
   if (isXrp(session)) return xrpToDrops(v);
-  if (isMpt(session)) return decimalToScaled(v, MPT_ASSET_SCALE).toString();
+  if (isMpt(session)) return decimalToScaled(v, mptAssetScale(session)).toString();
   return v;
 }
 

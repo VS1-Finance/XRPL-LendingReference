@@ -42,6 +42,10 @@ export interface ProvisionedEnvironment {
     // The MPTokenIssuanceID of the vault ASSET for an MPT vault (distinct from shareMptId, which is
     // the vault's own share issuance). Absent for an XRP or IOU vault.
     assetMptId?: string;
+    // The decimal scale (AssetScale) the vault ASSET's MPT issuance was actually created at. Absent
+    // for an XRP or IOU vault. Runtime shapers must read this back (not a fresh config read or a
+    // hardcoded const) so a session created at a non-default scale still shapes/displays correctly.
+    assetScale?: number;
   };
   steps: StepRecord[];
 }

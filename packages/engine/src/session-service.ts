@@ -84,6 +84,22 @@ export function resolveLoanDefaults(opts: {
   return out;
 }
 
+// Validate the MPT asset scale from an untyped request field, BEFORE any provisioning, so a bad value
+// is a fast 400 rather than a 500 mid-provision (a non-integer scale throws in BigInt shaping, an
+// out-of-range scale reaches the ledger with an out-of-spec AssetScale). The route has no JSON schema,
+// so the value may arrive as any JSON type — mirror resolveBotSeed/resolveLoanDefaults and reject here.
+// Range is the MPT spec's 0..15. Returns undefined when absent, so the MPT default (2) applies downstream.
+export function resolveMptAssetScale(scale: unknown): number | undefined {
+  if (scale === undefined || scale === null) return undefined;
+  if (typeof scale !== "number" || !Number.isInteger(scale)) {
+    throw new ValidationError("mptAssetScale must be an integer");
+  }
+  if (scale < 0 || scale > 15) {
+    throw new ValidationError("mptAssetScale must be between 0 and 15");
+  }
+  return scale;
+}
+
 function clampPool(requested: number | undefined, fallback: number): number {
   const n = typeof requested === "number" && Number.isFinite(requested) ? Math.round(requested) : fallback;
   return Math.max(1, Math.min(MAX_POOL, n));
@@ -141,6 +157,9 @@ export class SessionService {
     // its own issuer); the rate fields are percentages (converted to the ledger's scaled integers);
     // cover and debt are whole-unit decimal strings.
     asset?: string;
+    // MPT-only: the decimal scale (AssetScale) to create the vault asset's MPT issuance at. Ignored
+    // unless asset resolves to MPT. Omitted → downstream default (2), unchanged from today.
+    mptAssetScale?: number;
     coverRatePercent?: number;
     liquidationRatePercent?: number;
     managementFeePercent?: number;
@@ -167,6 +186,8 @@ export class SessionService {
     const token = this.uniqueToken(opts.label);
     // Resolve the bot seed up front so a malformed value is a fast 400, not a 500 after a full provision.
     const botSeed = resolveBotSeed(opts.botSeed, token);
+    // Validated up front (400 on a bad value) rather than reaching 10^scale shaping mid-provision.
+    const mptAssetScale = resolveMptAssetScale(opts.mptAssetScale);
     // The create request's explicit loan defaults take precedence; any field it omits falls back to the
     // deployment config's loanDefaults (already validated + scaled by ConfigSchema). A field absent from
     // both leaves no session default, so origination uses the engine's hardcoded fallback.
@@ -190,7 +211,7 @@ export class SessionService {
         ? opts.asset.toUpperCase() === "XRP"
           ? { asset: { currency: "XRP" } }
           : opts.asset.toUpperCase() === "MPT"
-            ? { asset: { currency: "MPT" } }
+            ? { asset: { currency: "MPT", ...(mptAssetScale !== undefined ? { assetScale: mptAssetScale } : {}) } }
             : { asset: { currency: normalizeCurrency(opts.asset) } }
         : {}),
       // A public vault drops the domain entirely — no gate, no credentials. Permissioned keeps the base

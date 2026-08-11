@@ -2,11 +2,6 @@ import { dropsToXrpString, ledgerTimeSeconds, scaledToDecimal } from "@lending/s
 import { isPermissioned } from "@lending/bootstrap";
 import type { Session } from "@lending/session";
 
-// Decimal places the vault-asset MPT issuance is created at. Mirrors MPT_ASSET_SCALE in
-// bootstrap/steps.ts — kept here too since state is read directly off the ledger as raw integers and
-// needs the same scale to render a whole-token display string.
-const MPT_ASSET_SCALE = 2;
-
 // The current state of a session, read live from the validated ledger. This is what the front end
 // polls to watch a session evolve as humans and bots act — the vault's assets and shares, the
 // broker's cover, the loans and their status, and the seat map with who holds each.
@@ -38,15 +33,18 @@ const LSF_CREDENTIAL_ACCEPTED = 0x00010000;
 export async function readSessionState(session: Session): Promise<SessionState> {
   // Whether the session asset is native XRP, so on-ledger drops amounts can be shown as whole XRP.
   const isXrp = session.env.asset.currency === "XRP" && !session.env.asset.issuer;
-  // Whether the session asset is MPT, so on-ledger raw integer amounts (at MPT_ASSET_SCALE) can be
-  // shown as whole tokens.
+  // Whether the session asset is MPT, so on-ledger raw integer amounts (at the vault's actual
+  // assetScale) can be shown as whole tokens.
   const isMpt = session.env.asset.currency === "MPT";
+  // The scale the vault's MPT asset was actually created at (env, not config or a const — the vault
+  // could have been provisioned at any scale). Irrelevant, but harmless, for a non-MPT session.
+  const mptScale = session.env.objects.assetScale ?? 2;
   // An asset-denominated ledger amount as a whole-token string. XRP fields come off the ledger in
-  // drops and are divided down to whole XRP; MPT fields come off the ledger as raw integers at
-  // MPT_ASSET_SCALE and are divided down by that scale; issued amounts are already in token units.
-  // This keeps the state the front end renders consistent across every asset kind.
+  // drops and are divided down to whole XRP; MPT fields come off the ledger as raw integers at the
+  // vault's actual assetScale and are divided down by that scale; issued amounts are already in token
+  // units. This keeps the state the front end renders consistent across every asset kind.
   const assetValue = (v: unknown): string =>
-    isXrp ? dropsToXrpString(readAmount(v)) : isMpt ? scaledToDecimal(BigInt(readAmount(v)), MPT_ASSET_SCALE) : readAmount(v);
+    isXrp ? dropsToXrpString(readAmount(v)) : isMpt ? scaledToDecimal(BigInt(readAmount(v)), mptScale) : readAmount(v);
 
   const owner = session.env.accounts.owner.address;
   const vault = await firstObject(session, owner, "vault");

@@ -1,11 +1,6 @@
 import { dropsToXrpString, scaledToDecimal } from "@lending/shared";
 import type { Session } from "@lending/session";
 
-// Decimal places the vault-asset MPT issuance is created at. Mirrors MPT_ASSET_SCALE in
-// bootstrap/steps.ts — kept here too since balances are read directly off the ledger as raw integers
-// and need the same scale to render a whole-token display string.
-const MPT_ASSET_SCALE = 2;
-
 // A participant account's on-ledger holdings, read live from the validated ledger: its XRP, the vault
 // asset it holds (for an IOU or MPT vault), and the vault shares it holds. This is what the wallet UI
 // renders.
@@ -76,7 +71,8 @@ async function readIssued(session: Session, holder: string, currency: string, is
 }
 
 // The holder's balance of the vault's MPT asset, as a whole-token decimal string (the raw on-ledger
-// MPTAmount is a base-unit integer at MPT_ASSET_SCALE, scaled down to match the IOU display convention
+// MPTAmount is a base-unit integer at the vault's actual assetScale — read back from env, since the
+// vault could have been provisioned at any scale — scaled down to match the IOU display convention
 // readIssued uses).
 async function readMptAsset(session: Session, holder: string, assetMptId: string): Promise<string> {
   try {
@@ -84,7 +80,8 @@ async function readMptAsset(session: Session, holder: string, assetMptId: string
     const objs = res.result.account_objects as unknown as Record<string, unknown>[];
     const held = objs.find((o) => o.MPTokenIssuanceID === assetMptId);
     const raw = (held?.MPTAmount as string | undefined) ?? "0";
-    return scaledToDecimal(BigInt(raw), MPT_ASSET_SCALE);
+    const scale = session.env.objects.assetScale ?? 2;
+    return scaledToDecimal(BigInt(raw), scale);
   } catch (err) {
     if (isAccountNotFound(err)) return "0";
     throw err;
