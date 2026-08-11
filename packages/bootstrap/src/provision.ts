@@ -100,6 +100,10 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
       const issuance = await findMptIssuance(client, accounts.issuer.address);
       if (!issuance) throw new Error("mpt-asset-issuance-create settled but the issuer's mpt_issuance object was not found");
       env.objects.assetMptId = issuance.id;
+      // The scale the issuance was actually created at (config.asset.assetScale if the caller supplied
+      // one, else the harness default of 2). Stored on env so every runtime shaper reads the real scale
+      // back later, rather than re-deriving it from config or a hardcoded const.
+      env.objects.assetScale = config.asset.assetScale ?? 2;
 
       // Batch 3+4 (MPT): per-holder authorize + distribution, each holder's pair as one atomic XLS-56 Batch.
       const distHolders = [

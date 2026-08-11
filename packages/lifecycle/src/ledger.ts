@@ -2,10 +2,12 @@ import { clampIssuedValueUp, decimalToScaled, dropsToXrpString, scaledToDecimal 
 import { xrpToDrops, type Amount, type Client, type MPTAmount } from "xrpl";
 import type { ProvisionedEnvironment } from "./types.js";
 
-// Decimal places the vault-asset MPT issuance is created at. Mirrors MPT_ASSET_SCALE in
-// bootstrap/steps.ts — kept here too since the lifecycle runner reasons in whole-token units and needs
-// the same scale to shape/read a raw integer MPT amount.
-const MPT_ASSET_SCALE = 2;
+// The scale the environment's vault-asset MPT issuance was actually created at, read back from env (not
+// a const — an environment could have been provisioned at any scale). The lifecycle runner reasons in
+// whole-token units and needs this scale to shape/read a raw integer MPT amount.
+function mptAssetScale(env: ProvisionedEnvironment): number {
+  return env.objects.assetScale ?? 2;
+}
 
 // Whether the environment's asset is native XRP rather than an issued token.
 function isXrp(env: ProvisionedEnvironment): boolean {
@@ -27,18 +29,19 @@ export function assetAmount(env: ProvisionedEnvironment, value: string): Amount 
   if (isMpt(env)) {
     const mptIssuanceId = env.objects.assetMptId;
     if (!mptIssuanceId) throw new Error("MPT asset is missing its assetMptId in the provisioned graph");
-    return { mpt_issuance_id: mptIssuanceId, value: decimalToScaled(value, MPT_ASSET_SCALE).toString() };
+    return { mpt_issuance_id: mptIssuanceId, value: decimalToScaled(value, mptAssetScale(env)).toString() };
   }
   if (!env.asset.issuer) throw new Error("issued asset is missing its issuer in the provisioned graph");
   return { currency: env.asset.currency, issuer: env.asset.issuer, value: clampIssuedValueUp(value) };
 }
 
-// Converts an amount read off the ledger (drops for XRP, a raw integer at MPT_ASSET_SCALE for MPT, a
-// decimal token value for IOU) into the whole-token units assetAmount expects. Loan balances come back
-// in ledger units, so a repayment derived from a loan's outstanding balance passes through here first.
+// Converts an amount read off the ledger (drops for XRP, a raw integer at the environment's actual
+// assetScale for MPT, a decimal token value for IOU) into the whole-token units assetAmount expects.
+// Loan balances come back in ledger units, so a repayment derived from a loan's outstanding balance
+// passes through here first.
 export function ledgerToWhole(env: ProvisionedEnvironment, value: string): string {
   if (isXrp(env)) return dropsToXrpString(value);
-  if (isMpt(env)) return scaledToDecimal(BigInt(value), MPT_ASSET_SCALE);
+  if (isMpt(env)) return scaledToDecimal(BigInt(value), mptAssetScale(env));
   return value;
 }
 
@@ -47,7 +50,7 @@ export function ledgerToWhole(env: ProvisionedEnvironment, value: string): strin
 // integer units for MPT, whole tokens otherwise.
 export function brokerValue(env: ProvisionedEnvironment, value: string): string {
   if (isXrp(env)) return xrpToDrops(value);
-  if (isMpt(env)) return decimalToScaled(value, MPT_ASSET_SCALE).toString();
+  if (isMpt(env)) return decimalToScaled(value, mptAssetScale(env)).toString();
   return value;
 }
 
@@ -71,7 +74,7 @@ export async function issuedAssetBalance(client: Client, holder: string, env: Pr
     const objs = res.result.account_objects as unknown as Record<string, unknown>[];
     const held = objs.find((o) => o.MPTokenIssuanceID === mptIssuanceId);
     const raw = (held?.MPTAmount as string | undefined) ?? "0";
-    return scaledToDecimal(BigInt(raw), MPT_ASSET_SCALE);
+    return scaledToDecimal(BigInt(raw), mptAssetScale(env));
   }
   if (!env.asset.issuer) return "0";
   const res = await client.request({ command: "account_lines", account: holder, peer: env.asset.issuer, ledger_index: "validated" });

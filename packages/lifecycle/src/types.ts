@@ -19,6 +19,9 @@ export interface ProvisionedEnvironment {
     // the vault's own share issuance). Absent for an XRP or IOU vault. Mirrors
     // bootstrap/src/types.ts's ProvisionedEnvironment.objects.assetMptId.
     assetMptId?: string;
+    // The decimal scale (AssetScale) the vault ASSET's MPT issuance was actually created at. Absent for
+    // an XRP or IOU vault. Mirrors bootstrap/src/types.ts's ProvisionedEnvironment.objects.assetScale.
+    assetScale?: number;
   };
 }
 

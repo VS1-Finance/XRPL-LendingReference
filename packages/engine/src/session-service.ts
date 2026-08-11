@@ -141,6 +141,9 @@ export class SessionService {
     // its own issuer); the rate fields are percentages (converted to the ledger's scaled integers);
     // cover and debt are whole-unit decimal strings.
     asset?: string;
+    // MPT-only: the decimal scale (AssetScale) to create the vault asset's MPT issuance at. Ignored
+    // unless asset resolves to MPT. Omitted → downstream default (2), unchanged from today.
+    mptAssetScale?: number;
     coverRatePercent?: number;
     liquidationRatePercent?: number;
     managementFeePercent?: number;
@@ -190,7 +193,7 @@ export class SessionService {
         ? opts.asset.toUpperCase() === "XRP"
           ? { asset: { currency: "XRP" } }
           : opts.asset.toUpperCase() === "MPT"
-            ? { asset: { currency: "MPT" } }
+            ? { asset: { currency: "MPT", ...(opts.mptAssetScale !== undefined ? { assetScale: opts.mptAssetScale } : {}) } }
             : { asset: { currency: normalizeCurrency(opts.asset) } }
         : {}),
       // A public vault drops the domain entirely — no gate, no credentials. Permissioned keeps the base

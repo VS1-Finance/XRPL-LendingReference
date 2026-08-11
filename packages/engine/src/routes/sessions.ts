@@ -11,6 +11,9 @@ interface ProvisionBody {
   depositors?: number;
   borrowers?: number;
   asset?: string;
+  // MPT-only: the decimal scale (AssetScale) to create the vault asset's MPT issuance at. Ignored for
+  // XRP/IOU. Omitted → the harness default (2), unchanged from today's hardcoded behavior.
+  mptAssetScale?: number;
   coverRatePercent?: number;
   liquidationRatePercent?: number;
   managementFeePercent?: number;
