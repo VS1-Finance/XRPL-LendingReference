@@ -181,21 +181,28 @@ export class SessionService {
         borrowers: clampPool(opts.borrowers, this.baseConfig.pool.borrowers),
       },
       // The vault asset. "XRP" (the UI's default) provisions a native-XRP vault — no currency issuer,
-      // no trust lines, no clawback; the provisioning path keys all of that off isXrpAsset. Any other
-      // value is an IOU currency, with the issuer filled in at provision time from the derived issuer
-      // account (issuer omitted here). Only an omitted asset falls back to the base config.
+      // no trust lines, no clawback; the provisioning path keys all of that off isXrpAsset. "MPT"
+      // provisions an MPT vault asset — the harness stands up its own issuance (mptIssuanceId omitted
+      // here, filled in at provision time), matching how an IOU's issuer is filled in at provision time.
+      // Any other value is an IOU currency, with the issuer filled in at provision time from the derived
+      // issuer account (issuer omitted here). Only an omitted asset falls back to the base config.
       ...(opts.asset
         ? opts.asset.toUpperCase() === "XRP"
           ? { asset: { currency: "XRP" } }
-          : { asset: { currency: normalizeCurrency(opts.asset) } }
+          : opts.asset.toUpperCase() === "MPT"
+            ? { asset: { currency: "MPT" } }
+            : { asset: { currency: normalizeCurrency(opts.asset) } }
         : {}),
       // A public vault drops the domain entirely — no gate, no credentials. Permissioned keeps the base
       // config's domain. Explicit false is the only way to opt out; the default stays permissioned.
       ...(opts.permissioned === false ? { domain: undefined } : {}),
       ...(opts.coverAmount ? { coverAmount: opts.coverAmount } : {}),
       // Loan ceiling. An XRP vault funds each holder debtMaximum XRP of real liquidity from the faucet
-      // (an IOU vault mints it), so the base config's large default is faucet-hostile for XRP: default
-      // it to a small, provisionable ceiling when the caller gives none. An explicit value always wins.
+      // (an IOU or MPT vault mints/distributes it), so the base config's large default is faucet-hostile
+      // for XRP only: default it to a small, provisionable ceiling when the caller gives none and the
+      // asset is XRP. MPT is minted like IOU (not faucet-funded), so it must NOT get the forced-small
+      // default — this check stays XRP-only and MPT falls through to the IOU (no-forced-default) path.
+      // An explicit value always wins.
       ...(opts.debtMaximum
         ? { debtMaximum: opts.debtMaximum }
         : opts.asset?.toUpperCase() === "XRP"

@@ -96,6 +96,34 @@ export async function issuedBalance(
   return line?.balance ?? "0";
 }
 
+// The issuer's own mpt_issuance object, if one already exists — used to make MPTokenIssuanceCreate
+// idempotent on re-run, and to read back the MPTokenIssuanceID once created.
+export async function findMptIssuance(client: Client, issuer: string): Promise<{ id: string } | undefined> {
+  const objs = await accountObjects(client, issuer, "mpt_issuance");
+  const issuance = objs[0];
+  if (!issuance) return undefined;
+  // Use `mpt_issuance_id` (the 192-bit MPTokenIssuanceID, 48 hex chars) — NOT `index`, which is the
+  // 256-bit ledger object key (64 hex). MPTokenIssuanceID / VaultCreate.Asset expect the Hash192; the
+  // ledger index would fail serialization with "Invalid Hash length 32".
+  return { id: issuance.mpt_issuance_id as string };
+}
+
+// A holder's balance of a given MPT issuance, as a decimal string ("0" if unauthorized or holding
+// none). Mirrors issuedBalance for the IOU path.
+export async function mptBalance(client: Client, holder: string, mptIssuanceId: string): Promise<string> {
+  const objs = await accountObjects(client, holder, "mptoken");
+  const token = objs.find((o) => o.MPTokenIssuanceID === mptIssuanceId);
+  return (token?.MPTAmount as string | undefined) ?? "0";
+}
+
+// Whether a holder has already opted in to a given MPT issuance (an MPTokenAuthorize was submitted and
+// the resulting MPToken object exists), regardless of balance. Mirrors hasTrustLine for the IOU path —
+// a holder can be authorized at zero balance, just as a trust line can exist unfunded.
+export async function hasMptAuthorization(client: Client, holder: string, mptIssuanceId: string): Promise<boolean> {
+  const objs = await accountObjects(client, holder, "mptoken");
+  return objs.some((o) => o.MPTokenIssuanceID === mptIssuanceId);
+}
+
 // An account flag check, used to make issuer configuration idempotent.
 export async function accountHasFlag(client: Client, account: string, flagBit: number): Promise<boolean> {
   try {

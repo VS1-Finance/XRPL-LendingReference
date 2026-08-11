@@ -3,6 +3,7 @@ import {
   deriveAccount,
   fanOutFunding,
   resolveTreasury,
+  isMptAsset,
   isXrpAsset,
   readReserveRates,
   roleReserveDrops,
@@ -14,6 +15,8 @@ import {
   credentialCreateSteps,
   distributeSteps,
   isPermissioned,
+  mptAuthorizeSteps,
+  mptDistributeSteps,
   runBatch,
   trustSteps,
   type ProvisionedAccount,
@@ -26,9 +29,10 @@ import type { Session } from "./session.js";
 // Add one participant to a running session at runtime. Mirrors the per-member slice of provision():
 // derive the next-index account, fund it (reserve, plus the XRP liquidity it must hold for a native
 // vault since there is no minting), then run just that member's on-ledger recipe — trust + distribute
-// for an IOU, credential create + accept for a permissioned vault, funding only for a public XRP vault.
-// Finally add a bot-occupied seat and append the account to the environment. Persisting the environment
-// is the engine layer's job; this does not touch Postgres or the bot loop beyond seating the new role.
+// for an IOU, MPTokenAuthorize + distribute for an MPT vault, credential create + accept for a
+// permissioned vault, funding only for a public XRP vault. Finally add a bot-occupied seat and append
+// the account to the environment. Persisting the environment is the engine layer's job; this does not
+// touch Postgres or the bot loop beyond seating the new role.
 export async function addParticipant(
   session: Session,
   role: "depositor" | "borrower",
@@ -38,6 +42,7 @@ export async function addParticipant(
   const log = (_m: string) => {};
   const permissioned = isPermissioned(session.env);
   const isXrp = isXrpAsset(config.asset);
+  const isMpt = isMptAsset(config.asset);
   const plural = role === "depositor" ? "depositors" : "borrowers";
 
   // Next free index for the role: the account is derived deterministically from (seed, role, index),
@@ -48,7 +53,10 @@ export async function addParticipant(
   // Reserve floor for this role, read live from the ledger. A native-XRP holder additionally holds
   // the liquidity it will move — recovered from the broker's DebtMaximum, which for an XRP vault the
   // ledger already stores in drops (see steps.ts: DebtMaximum = xrpToDrops(debtMaximum) at create),
-  // so it is added directly, not converted again. IOU liquidity is minted via distribute, not funded.
+  // so it is added directly, not converted again. IOU and MPT liquidity is minted/distributed via a
+  // Payment below, not funded — the MPT holder's reserve floor still needs the extra owner-count unit
+  // its MPToken object reserves, same as an IOU holder's trust line, which VaultShape.isXrp=false
+  // already accounts for (MPT shares the IOU branch for reserve sizing).
   const rates = await readReserveRates(session.client);
   const shape: VaultShape = { isXrp, permissioned, credentialedMembers: 1 };
   const reserveDrops = roleReserveDrops(role, shape, rates);
@@ -82,13 +90,18 @@ export async function addParticipant(
   };
 
   // The on-ledger recipe for this one member, matching provision(): trust then distribute for an IOU;
-  // credential create then a separate accept for a permissioned vault; nothing extra for a public XRP
-  // vault (it is already funded above). trustSteps/distributeSteps are no-ops for XRP, so guarding on
-  // isXrp keeps the intent explicit rather than relying on their internal short-circuit.
+  // MPTokenAuthorize then distribute for an MPT vault (the MPT parallel to trust+distribute — the
+  // holder opts in, then the issuer pays it its liquidity); credential create then a separate accept
+  // for a permissioned vault; nothing extra for a public XRP vault (it is already funded above).
+  // trustSteps/distributeSteps/mptAuthorizeSteps/mptDistributeSteps are all no-ops for XRP, so guarding
+  // on isXrp/isMpt keeps the intent explicit rather than relying on their internal short-circuit.
   // Label with the pool index (matching provision's `role[index]` form) so each runtime add records a
   // distinct step/correlation id rather than colliding on a bare role name.
   const label = `${role}[${index}]`;
-  if (!isXrp) {
+  if (isMpt) {
+    await runBatch(deps, mptAuthorizeSteps(deps, derived.wallet, label));
+    await runBatch(deps, mptDistributeSteps(deps, derived.wallet, label, config.debtMaximum));
+  } else if (!isXrp) {
     await runBatch(deps, trustSteps(deps, derived.wallet, label));
     await runBatch(deps, distributeSteps(deps, derived.wallet, label, config.debtMaximum));
   }

@@ -1,4 +1,12 @@
-export { AssetConfigSchema, IouAssetSchema, XrpAssetSchema, isXrpAsset, type AssetConfig } from "./asset.js";
+export {
+  AssetConfigSchema,
+  IouAssetSchema,
+  XrpAssetSchema,
+  MptAssetSchema,
+  isXrpAsset,
+  isMptAsset,
+  type AssetConfig,
+} from "./asset.js";
 export {
   ConfigSchema,
   NetworkSchema,

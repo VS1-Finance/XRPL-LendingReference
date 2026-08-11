@@ -22,8 +22,21 @@ export const XrpAssetSchema = z.object({
 });
 
 export const IouAssetSchema = z.object({
-  currency: Currency.refine((c) => c !== "XRP", "IOU currency cannot be XRP"),
+  currency: Currency.refine((c) => c !== "XRP" && c !== "MPT", "IOU currency cannot be XRP or MPT"),
   issuer: ClassicAddress,
+});
+
+// An MPT (Multi-Purpose Token) asset is identified by its 192-bit MPTokenIssuanceID (48 hex
+// chars), not by a currency+issuer pair. The `currency: "MPT"` discriminant mirrors how XRP uses
+// `currency: "XRP"`, keeping the union unambiguous. `mptIssuanceId` may be omitted when the
+// harness is asked to stand up its own issuance; in that case it is filled in at provision time,
+// mirroring the IOU `issuer` optional case.
+export const MptAssetSchema = z.object({
+  currency: z.literal("MPT"),
+  mptIssuanceId: z
+    .string()
+    .regex(/^[0-9A-Fa-f]{48}$/, "mptIssuanceId must be a 48-character hex string")
+    .optional(),
 });
 
 // Asset reference as it appears in config. For an IOU the issuer may be omitted when the
@@ -31,8 +44,9 @@ export const IouAssetSchema = z.object({
 // time from the derived issuer account.
 export const AssetConfigSchema = z.union([
   XrpAssetSchema,
+  MptAssetSchema,
   z.object({
-    currency: Currency.refine((c) => c !== "XRP", "IOU currency cannot be XRP"),
+    currency: Currency.refine((c) => c !== "XRP" && c !== "MPT", "IOU currency cannot be XRP or MPT"),
     issuer: ClassicAddress.optional(),
   }),
 ]);
@@ -41,4 +55,8 @@ export type AssetConfig = z.infer<typeof AssetConfigSchema>;
 
 export function isXrpAsset(a: AssetConfig): a is z.infer<typeof XrpAssetSchema> {
   return a.currency === "XRP";
+}
+
+export function isMptAsset(a: AssetConfig): a is z.infer<typeof MptAssetSchema> {
+  return a.currency === "MPT";
 }
