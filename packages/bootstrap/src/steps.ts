@@ -242,7 +242,7 @@ export function mptDistributeSteps(deps: StepDeps, holder: Wallet, role: string,
   const issuer = deps.accounts.issuer.wallet;
   const mptIssuanceId = deps.env.objects.assetMptId;
   if (!mptIssuanceId) throw new Error("mptDistributeSteps requires the asset MPT issuance to already exist (env.objects.assetMptId)");
-  const scaledAmount = mptScaledAmount(amount);
+  const scaledAmount = mptScaledAmount(deps.config, amount);
   return [{
     action: `distribute-${role}`,
     alreadyDone: async () => Number(await mptBalance(deps.client, holder.address, mptIssuanceId)) >= Number(scaledAmount),
@@ -293,13 +293,23 @@ const MPT_ASSET_FLAGS =
 // Decimal places the vault-asset MPT issuance is created at (matches AssetScale on
 // MPTokenIssuanceCreate below). MPT ledger amounts are raw integers at this scale — unlike an IOU's
 // decimal `value` string — so every whole-token config amount (coverAmount, debtMaximum, …) is scaled
-// through this before it appears in a transaction.
+// through this before it appears in a transaction. 2 is the harness default, used whenever the config's
+// MPT asset omits an explicit assetScale — this preserves today's behavior exactly for every session
+// that doesn't opt into a non-default scale.
 export const MPT_ASSET_SCALE = 2;
 
+// The effective AssetScale for the current config's MPT asset: the configured value if the caller
+// supplied one, else the MPT_ASSET_SCALE default. Guards non-MPT configs (asset.assetScale only exists
+// on the MPT branch of AssetConfig) by falling back to the default rather than throwing, so callers that
+// build amounts generically don't need their own MPT type guard first.
+export function mptScale(config: Config): number {
+  return (isMptAsset(config.asset) ? config.asset.assetScale : undefined) ?? MPT_ASSET_SCALE;
+}
+
 // Convert a whole-token decimal config value (e.g. coverAmount, debtMaximum) to the raw integer string
-// an MPT amount field expects at MPT_ASSET_SCALE.
-export function mptScaledAmount(value: string): string {
-  return decimalToScaled(value, MPT_ASSET_SCALE).toString();
+// an MPT amount field expects, at the config's effective MPT scale (mptScale).
+export function mptScaledAmount(config: Config, value: string): string {
+  return decimalToScaled(value, mptScale(config)).toString();
 }
 
 // The vault asset's MPTokenIssuanceID, captured on the env by provision.ts right after
@@ -310,15 +320,16 @@ function requireAssetMptId(deps: StepDeps): string {
   return id;
 }
 
-// The MaximumAmount to size the vault-asset issuance at, in raw integer units at MPT_ASSET_SCALE:
-// enough to cover the owner's seeded cover (2x coverAmount, mirroring coverAndLiquidity in
-// provision.ts) plus every depositor's and borrower's liquidity (debtMaximum each, mirroring
-// liquidityPerHolder), with a 10x headroom multiple so bot activity and re-runs never bump the
+// The MaximumAmount to size the vault-asset issuance at, in raw integer units at the config's effective
+// MPT scale (mptScale): enough to cover the owner's seeded cover (2x coverAmount, mirroring
+// coverAndLiquidity in provision.ts) plus every depositor's and borrower's liquidity (debtMaximum each,
+// mirroring liquidityPerHolder), with a 10x headroom multiple so bot activity and re-runs never bump the
 // ceiling. Kept in integer (bigint) arithmetic throughout, consistent with money.ts conventions.
 function mptMaximumAmount(deps: StepDeps): string {
-  const cover = decimalToScaled(deps.config.coverAmount, MPT_ASSET_SCALE) * 2n;
+  const scale = mptScale(deps.config);
+  const cover = decimalToScaled(deps.config.coverAmount, scale) * 2n;
   const holders = BigInt(deps.config.pool.depositors + deps.config.pool.borrowers);
-  const liquidity = decimalToScaled(deps.config.debtMaximum, MPT_ASSET_SCALE) * holders;
+  const liquidity = decimalToScaled(deps.config.debtMaximum, scale) * holders;
   const headroom = 10n;
   return ((cover + liquidity) * headroom).toString();
 }
@@ -339,7 +350,7 @@ export function mptIssuanceSteps(deps: StepDeps): PlannedStep[] {
         tx: {
           TransactionType: "MPTokenIssuanceCreate",
           Account: issuer.address,
-          AssetScale: 2,
+          AssetScale: mptScale(deps.config),
           MaximumAmount: mptMaximumAmount(deps),
           Flags: MPT_ASSET_FLAGS,
         },
@@ -364,7 +375,7 @@ export function mptAuthorizeAndDistributeUnits(
   const mptIssuanceId = deps.env.objects.assetMptId;
   if (!mptIssuanceId) throw new Error("mptAuthorizeAndDistributeUnits requires the asset MPT issuance to already exist (env.objects.assetMptId)");
   return holders.map(({ wallet, label, amount }) => {
-    const scaledAmount = mptScaledAmount(amount);
+    const scaledAmount = mptScaledAmount(deps.config, amount);
     const holds = async () => Number(await mptBalance(deps.client, wallet.address, mptIssuanceId)) >= Number(scaledAmount);
     return {
       key: `mpt-authorize-distribute-${label}`,
@@ -509,11 +520,11 @@ export async function createBroker(deps: StepDeps): Promise<void> {
         VaultID: vaultId,
         ManagementFeeRate: deps.config.managementFeeRate,
         // DebtMaximum is in the broker's asset units: drops for XRP, the issuance's raw integer units
-        // (at MPT_ASSET_SCALE) for MPT, whole tokens otherwise (IOU).
+        // (at the config's effective mptScale) for MPT, whole tokens otherwise (IOU).
         DebtMaximum: isXrpAsset(deps.config.asset)
           ? xrpToDrops(deps.config.debtMaximum)
           : isMptAsset(deps.config.asset)
-            ? mptScaledAmount(deps.config.debtMaximum)
+            ? mptScaledAmount(deps.config, deps.config.debtMaximum)
             : deps.config.debtMaximum,
         CoverRateMinimum: deps.config.coverRateMinimum,
         CoverRateLiquidation: deps.config.coverRateLiquidation,
@@ -529,12 +540,12 @@ export async function depositCover(deps: StepDeps): Promise<void> {
   if (!brokerId) throw new Error("cannot deposit cover before the broker exists");
 
   // Cover is deposited in the broker's asset units: drops for XRP, the issuance's raw integer units
-  // (at MPT_ASSET_SCALE) for MPT, an issued amount otherwise (IOU). The configured coverAmount is
-  // always a whole-token value, converted to match.
+  // (at the config's effective mptScale) for MPT, an issued amount otherwise (IOU). The configured
+  // coverAmount is always a whole-token value, converted to match.
   const amount = isXrpAsset(deps.config.asset)
     ? xrpToDrops(deps.config.coverAmount)
     : isMptAsset(deps.config.asset)
-      ? { mpt_issuance_id: requireAssetMptId(deps), value: mptScaledAmount(deps.config.coverAmount) }
+      ? { mpt_issuance_id: requireAssetMptId(deps), value: mptScaledAmount(deps.config, deps.config.coverAmount) }
       : { currency: deps.config.asset.currency, issuer: deps.accounts.issuer.address, value: deps.config.coverAmount };
 
   // Idempotent on the configured cover amount: a re-run that already holds at least that much
@@ -544,7 +555,7 @@ export async function depositCover(deps: StepDeps): Promise<void> {
   const requiredCover = isXrpAsset(deps.config.asset)
     ? xrpToDrops(deps.config.coverAmount)
     : isMptAsset(deps.config.asset)
-      ? mptScaledAmount(deps.config.coverAmount)
+      ? mptScaledAmount(deps.config, deps.config.coverAmount)
       : deps.config.coverAmount;
   await runBatch(deps, [{
     action: "cover-deposit",

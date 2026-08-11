@@ -37,6 +37,10 @@ export const MptAssetSchema = z.object({
     .string()
     .regex(/^[0-9A-Fa-f]{48}$/, "mptIssuanceId must be a 48-character hex string")
     .optional(),
+  // Decimal places the vault-asset MPT issuance is created at (MPTokenIssuanceCreate's AssetScale).
+  // Omitted when the harness is asked to stand up its own issuance at the default scale; in that case
+  // the runtime falls back to 2 wherever this is read, matching today's hardcoded behavior exactly.
+  assetScale: z.number().int().min(0).max(15).optional(),
 });
 
 // Asset reference as it appears in config. For an IOU the issuer may be omitted when the
