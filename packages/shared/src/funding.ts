@@ -141,6 +141,15 @@ export async function resolveTreasury(
   return treasury;
 }
 
+// The treasury's balance in whole XRP, for a preflight check before a run that funds from it. Reuses
+// the same balance read the fan-out trusts. An unfunded treasury reads as 0 (handled by
+// accountBalanceDrops), never throws for a missing account.
+export async function treasuryBalanceXrp(client: Client, seed: string): Promise<number> {
+  const wallet = Wallet.fromSeed(seed);
+  const drops = await accountBalanceDrops(client, wallet.address);
+  return Number(dropsToXrp(drops.toString()));
+}
+
 async function accountBalanceDrops(client: Client, address: string): Promise<bigint> {
   try {
     const res = await client.request({ command: "account_info", account: address, ledger_index: "validated" });

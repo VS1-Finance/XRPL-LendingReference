@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: Typecheck + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  negative-suite:
+    name: Negative suite (Devnet)
+    # Runs on merges to main and on demand — not on PRs (it spends Devnet XRP and takes ~10 min).
+    # The `secrets` context is NOT available in a job-level `if` (only github/needs/vars/inputs are),
+    # so gate the job on the event here, and gate the real steps on env.XRP_TREASURY_SEED (env IS
+    # readable in a step-level `if`). With no secret set, the steps skip and the job is a clean green —
+    # this is how "skip cleanly when the secret is absent" is achieved without an invalid job-level if.
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: negative-suite-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      ENGINE_NETWORK: devnet
+      XRP_TREASURY_SEED: ${{ secrets.XRP_TREASURY_SEED }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Treasury preflight
+        if: ${{ env.XRP_TREASURY_SEED != '' }}
+        run: pnpm treasury-preflight
+      - name: Run negative suite
+        if: ${{ env.XRP_TREASURY_SEED != '' }}
+        run: pnpm negatives -- run --config ./packages/bootstrap/config.example.json --out-dir out
+      - name: Note when skipped
+        if: ${{ env.XRP_TREASURY_SEED == '' }}
+        run: echo "XRP_TREASURY_SEED not set — skipping the live negative suite (add the secret to enable it)."
+      - name: Upload results
+        if: ${{ always() && env.XRP_TREASURY_SEED != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: negative-suite-results
+          path: out/
+          if-no-files-found: ignore
