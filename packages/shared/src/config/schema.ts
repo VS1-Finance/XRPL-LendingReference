@@ -103,6 +103,21 @@ export const ConfigSchema = z
           .default({}),
       })
       .default({}),
+
+    // Default loan terms applied at origination when neither the per-origination request nor the
+    // per-session create input supplies a value. The lowest-precedence source; omit the whole block to
+    // fall back to the engine's built-in defaults (InterestRate 50000, PaymentInterval 60, GracePeriod
+    // 60, term ledger-derived). interestRate is the ledger's scaled integer (100000 = 100%), consistent
+    // with the other scaled rates in this schema; interval/grace are seconds, paymentTotal a payment count.
+    loanDefaults: z
+      .object({
+        interestRate: ScaledRate.max(100000, "interestRate must be <= 100000 (100%)").optional(),
+        paymentInterval: z.number().int().min(60, "paymentInterval must be >= 60 seconds").optional(),
+        gracePeriod: z.number().int().nonnegative("gracePeriod must be >= 0").optional(),
+        paymentTotal: z.number().int().positive("paymentTotal must be a positive integer").optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((cfg, ctx) => {
@@ -112,6 +127,10 @@ export const ConfigSchema = z
         path: ["coverRateLiquidation"],
         message: "coverRateLiquidation cannot exceed coverRateMinimum",
       });
+    }
+    const ld = cfg.loanDefaults;
+    if (ld?.gracePeriod !== undefined && ld.paymentInterval !== undefined && ld.gracePeriod > ld.paymentInterval) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "loanDefaults.gracePeriod cannot exceed loanDefaults.paymentInterval", path: ["loanDefaults", "gracePeriod"] });
     }
   });
 

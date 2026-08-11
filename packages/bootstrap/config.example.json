@@ -22,5 +22,10 @@
     "seed": "bots-demo",
     "borrowerWeights": { "onTime": 5, "late": 1, "early": 1, "overpay": 1, "default": 2 },
     "depositorWeights": { "hold": 3, "churn": 1, "topUp": 1 }
+  },
+  "loanDefaults": {
+    "interestRate": 50000,
+    "paymentInterval": 60,
+    "gracePeriod": 60
   }
 }
