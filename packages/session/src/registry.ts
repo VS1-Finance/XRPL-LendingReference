@@ -18,6 +18,9 @@ export interface SessionSummary {
   // reproduce the variant assignment. Optional: absent until bots can run, and on a mock/older engine.
   scenario?: string;
   botSeed?: string;
+  // Default loan terms applied at origination when the originator leaves a field blank. interestRate is
+  // the ledger's scaled integer (100000 = 100%). Attached by SessionService from a per-session map.
+  loanDefaults?: { interestRate?: number; paymentInterval?: number; gracePeriod?: number; paymentTotal?: number };
 }
 
 // An in-memory registry of live sessions, so sessions can be discovered and joined. The provisioned

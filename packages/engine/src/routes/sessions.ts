@@ -20,6 +20,12 @@ interface ProvisionBody {
   // Optional bot seed. Fixes the variant assignment; omitted → the engine generates one. Forwarded to
   // create() by the handlers' existing spreads, so no mapping code is needed.
   botSeed?: string;
+  // Default loan terms applied at origination when a field is left blank. Forwarded to create() by the
+  // handlers' existing spreads, so no mapping code is needed.
+  interestRatePercent?: number;
+  paymentInterval?: number;
+  gracePeriod?: number;
+  paymentTotal?: number;
   // Whether the vault is permissioned (domain-gated, default) or public (open). false → public.
   permissioned?: boolean;
 }
