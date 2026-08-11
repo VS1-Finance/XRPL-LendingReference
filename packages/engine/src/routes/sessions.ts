@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { CapacityError, type SessionService } from "../session-service.js";
+import { CapacityError, ValidationError, type SessionService } from "../session-service.js";
 import type { BotService } from "../bot-service.js";
 import { readSessionState } from "../state-service.js";
 import { readBalances } from "../balances-service.js";
@@ -17,6 +17,9 @@ interface ProvisionBody {
   coverAmount?: string;
   debtMaximum?: string;
   scenario?: string;
+  // Optional bot seed. Fixes the variant assignment; omitted → the engine generates one. Forwarded to
+  // create() by the handlers' existing spreads, so no mapping code is needed.
+  botSeed?: string;
   // Whether the vault is permissioned (domain-gated, default) or public (open). false → public.
   permissioned?: boolean;
 }
@@ -27,8 +30,13 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionSer
   // Create a session. An optional label makes it recognizable; provisioning runs on the ledger, so
   // this call takes as long as a full environment provision.
   app.post<{ Body: ProvisionBody }>("/sessions", async (request, reply) => {
-    const summary = await sessions.create(request.body ?? {});
-    return reply.code(201).send(summary);
+    try {
+      const summary = await sessions.create(request.body ?? {});
+      return reply.code(201).send(summary);
+    } catch (err) {
+      if (err instanceof ValidationError) return reply.code(400).send({ error: err.message });
+      throw err;
+    }
   });
 
   // Create a session while streaming provisioning progress as Server-Sent Events. Each ledger step

@@ -13,6 +13,11 @@ export interface SessionSummary {
   permissioned: boolean;
   seats: { key: string; role: string; address: string; occupant: Occupant }[];
   openSeats: string[];
+  // The bot scenario preset and the effective bot seed for this session, attached by SessionService
+  // from its per-session maps (a Session itself does not carry them). They let a client display and
+  // reproduce the variant assignment. Optional: absent until bots can run, and on a mock/older engine.
+  scenario?: string;
+  botSeed?: string;
 }
 
 // An in-memory registry of live sessions, so sessions can be discovered and joined. The provisioned
