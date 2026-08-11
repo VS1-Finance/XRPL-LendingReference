@@ -52,8 +52,13 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Generate the Prisma client (gitignored generated code) so the suite's engine imports resolve.
+      # Generate the Prisma client (gitignored generated code) so the engine imports resolve.
       - run: pnpm --filter @lending/engine prisma:generate
+      # Build the workspace packages. The suite imports @lending/shared via its "main" (dist/index.js),
+      # which is gitignored compiled output — a fresh checkout has the source but not the build, so
+      # without this the suite fails with ERR_MODULE_NOT_FOUND on @lending/shared. `tsc -b` emits every
+      # package's dist/.
+      - run: pnpm typecheck
       - name: Treasury preflight
         if: ${{ env.XRP_TREASURY_SEED != '' }}
         run: pnpm treasury-preflight
