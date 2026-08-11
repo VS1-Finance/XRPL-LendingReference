@@ -48,6 +48,11 @@ export class SessionService {
   private readonly tokens = new Map<string, string>();
   // The bot scenario chosen for each session, used to weight the bot pool when it starts.
   private readonly scenarios = new Map<string, string>();
+  // The effective bot seed for each session (supplied or generated), used to seed the variant
+  // assignment when the pool starts, and surfaced so a run can be reproduced by re-entering it. Held
+  // in-memory for the process lifetime only, and lost on restart — matching `scenarios`; a reloaded
+  // session falls back to the base seed and is not byte-reproducible after a restart.
+  private readonly botSeeds = new Map<string, string>();
 
   constructor(
     private readonly baseConfig: Config,
@@ -74,6 +79,10 @@ export class SessionService {
     debtMaximum?: string;
     // Bot behaviour preset (calm | mixed | defaults), used to weight the pool when it runs.
     scenario?: string;
+    // Optional bot seed. Fixes the variant assignment so a run's behaviour mix is reproducible; when
+    // omitted a fresh seed is generated and stored. Only the variant mix is reproducible — not action
+    // timing (live-ledger reads and close timing still vary).
+    botSeed?: string;
     // Whether the vault is permissioned (domain-gated, the default) or public (open, no domain and no
     // credentials). Omit or true → permissioned; false → public.
     permissioned?: boolean;
@@ -117,6 +126,10 @@ export class SessionService {
     this.registry.register(session);
     this.tokens.set(session.setupId, token);
     if (opts.scenario) this.scenarios.set(session.setupId, opts.scenario);
+    // Use the supplied seed if non-blank, else generate a short legible one from the session token so
+    // it is easy to read off the Info tab and re-enter to reproduce the variant assignment.
+    const botSeed = opts.botSeed?.trim() || `seed-${createHash("sha256").update(token).digest("hex").slice(0, 8)}`;
+    this.botSeeds.set(session.setupId, botSeed);
 
     const summary = this.summaryOf(session.setupId)!;
     await this.store.saveSession(
@@ -196,11 +209,24 @@ export class SessionService {
   }
 
   summaryOf(setupId: string): SessionSummary | undefined {
-    return this.registry.list().find((s) => s.setupId === setupId);
+    const summary = this.registry.list().find((s) => s.setupId === setupId);
+    if (summary) {
+      // The registry summary is built from the Session, which does not carry the scenario or bot seed;
+      // overlay them from the per-session maps so every read (create, GET /sessions/:id, the SSE done
+      // event) reports the real values, not just the moment right after create.
+      summary.scenario = this.scenarios.get(setupId);
+      summary.botSeed = this.botSeeds.get(setupId);
+    }
+    return summary;
   }
 
   registryHandle(): SessionRegistry {
     return this.registry;
+  }
+
+  // The effective bot seed for a session, if any — used to seed the variant assignment.
+  botSeedFor(setupId: string): string | undefined {
+    return this.botSeeds.get(setupId);
   }
 
   // The bot scenario chosen for a session, if any — used to weight the pool when it starts.

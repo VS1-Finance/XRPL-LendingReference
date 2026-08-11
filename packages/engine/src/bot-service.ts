@@ -38,8 +38,13 @@ export class BotService {
     // again, and a subsequent start re-fills it.
     for (const seat of session.seats.values()) fillWithBot(seat);
     // A session's scenario preset selects the variant weights; without one, the base weights apply.
+    // A session's scenario preset selects the variant weights; without one, the base weights apply. The
+    // per-session bot seed (supplied at setup or generated) seeds the assignment; fall back to the base
+    // seed only if none was recorded, so the assignment is reproducible per session. Keep the base
+    // weight numbers on the no-scenario branch — only the seed changes.
     const scenario = this.sessions.scenarioFor(session.setupId);
-    const weights = scenario ? scenarioWeights(scenario, this.weights.seed) : this.weights;
+    const seed = this.sessions.botSeedFor(session.setupId) ?? this.weights.seed;
+    const weights = scenario ? scenarioWeights(scenario, seed) : { ...this.weights, seed };
     const scheduler = new BotScheduler(session, {
       variants: [],
       assignment: assignWeighted(session, weights),

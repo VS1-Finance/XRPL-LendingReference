@@ -17,6 +17,9 @@ interface ProvisionBody {
   coverAmount?: string;
   debtMaximum?: string;
   scenario?: string;
+  // Optional bot seed. Fixes the variant assignment; omitted → the engine generates one. Forwarded to
+  // create() by the handlers' existing spreads, so no mapping code is needed.
+  botSeed?: string;
   // Whether the vault is permissioned (domain-gated, default) or public (open). false → public.
   permissioned?: boolean;
 }
