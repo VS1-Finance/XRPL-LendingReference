@@ -1,11 +1,8 @@
 import type { SubmittableTransaction } from "xrpl";
+import { ledgerTimeSeconds } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
 import { assetAmount, outstandingToPay, payableLoan, loanDefaulted } from "./reads.js";
-
-// The XRP Ledger epoch (2000-01-01) that ledger time fields are measured from.
-const RIPPLE_EPOCH = 946684800;
-const nowRipple = (): number => Math.floor(Date.now() / 1000) - RIPPLE_EPOCH;
 
 // Submit a borrower's LoanPay, guarding the read-then-submit window against the broker-enforcer bot.
 // payableLoan already excludes defaulted loans, but the enforcer can default the loan between that read
@@ -46,7 +43,10 @@ export const repayLate = (): BotVariant => ({
     if (!loan) return idle;
 
     const due = Number(loan.NextPaymentDueDate ?? 0);
-    if (due && nowRipple() < due) return idle; // not late yet — hold off until past due
+    // Compare against the ledger's own close time, not the host wall clock, so "past due" matches what
+    // the ledger enforces.
+    const now = await ledgerTimeSeconds(ctx.session.client);
+    if (due && now < due) return idle; // not late yet — hold off until past due
 
     const amount = outstandingToPay(ctx.session, loan.TotalValueOutstanding);
     return submitRepay(ctx, loan.index as string, amount, "late repay");
