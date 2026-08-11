@@ -167,7 +167,11 @@ export class SessionService {
     const token = this.uniqueToken(opts.label);
     // Resolve the bot seed up front so a malformed value is a fast 400, not a 500 after a full provision.
     const botSeed = resolveBotSeed(opts.botSeed, token);
-    const loanDefaults = resolveLoanDefaults(opts);
+    // The create request's explicit loan defaults take precedence; any field it omits falls back to the
+    // deployment config's loanDefaults (already validated + scaled by ConfigSchema). A field absent from
+    // both leaves no session default, so origination uses the engine's hardcoded fallback.
+    const requestDefaults = resolveLoanDefaults(opts);
+    const loanDefaults: NonNullable<SessionSummary["loanDefaults"]> = { ...(this.baseConfig.loanDefaults ?? {}), ...requestDefaults };
     const config: Config = {
       ...this.baseConfig,
       seed: `${this.baseConfig.seed}-${token}`,
