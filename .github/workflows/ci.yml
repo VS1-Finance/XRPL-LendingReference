@@ -20,9 +20,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # The Prisma client is generated code (gitignored), so a fresh checkout must generate it before
-      # typecheck/tests can resolve ./generated/prisma. Generation needs only the schema, not a database.
-      - run: pnpm --filter @lending/engine prisma:generate
+      # Prisma clients are generated code (gitignored), so a fresh checkout must generate them before
+      # typecheck/tests can resolve them. The engine and the ingester each have their own schema and
+      # client; `-r` runs prisma:generate in every package that has it. Generation needs only the
+      # schema, not a database.
+      - run: pnpm -r prisma:generate
       - run: pnpm typecheck
       - run: pnpm test
 
@@ -52,8 +54,13 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Generate the Prisma client (gitignored generated code) so the suite's engine imports resolve.
-      - run: pnpm --filter @lending/engine prisma:generate
+      # Generate the Prisma clients (gitignored) for the engine and ingester so their imports resolve.
+      - run: pnpm -r prisma:generate
+      # Build the workspace packages. The suite imports @lending/shared via its "main" (dist/index.js),
+      # which is gitignored compiled output — a fresh checkout has the source but not the build, so
+      # without this the suite fails with ERR_MODULE_NOT_FOUND on @lending/shared. `tsc -b` emits every
+      # package's dist/.
+      - run: pnpm typecheck
       - name: Treasury preflight
         if: ${{ env.XRP_TREASURY_SEED != '' }}
         run: pnpm treasury-preflight
