@@ -2,7 +2,7 @@ import type { SubmittableTransaction } from "xrpl";
 import { ledgerTimeSeconds } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { assetAmount, outstandingToPay, payableLoan, loanDefaulted } from "./reads.js";
+import { assetAmount, outstandingToPay, payableLoan, loanDefaulted, repayHeadroom } from "./reads.js";
 
 // Submit a borrower's LoanPay, guarding the read-then-submit window against the broker-enforcer bot.
 // payableLoan already excludes defaulted loans, but the enforcer can default the loan between that read
@@ -63,9 +63,16 @@ export const overpay = (extra = "1000"): BotVariant => ({
     const loan = await payableLoan(ctx.session, ctx.seat.address);
     if (!loan) return idle;
 
-    // Pay the full outstanding plus a fixed overpayment. Both are in whole-token units: the outstanding
-    // is normalised out of ledger units first, then the extra is added on top.
-    const amount = String(Number(outstandingToPay(ctx.session, loan.TotalValueOutstanding)) + Number(extra));
+    // Pay the full outstanding plus a fixed overpayment, both in whole-token units (the outstanding is
+    // normalised out of ledger units first, then the extra is added on top). But cap the total at what
+    // the borrower can actually afford: for an XRP loan a payment above the account's spendable balance
+    // is a guaranteed rejection (tecUNFUNDED, or tecNO_PERMISSION once the loan impairs while the bot
+    // retries), which wedges the loan permanently. Never drop below the outstanding, so the loan still
+    // settles in full even when the borrower cannot cover the extra — it just overpays by less (or not
+    // at all). IOU/MPT borrowers are minted enough to cover their debt, so their headroom is unbounded.
+    const outstanding = Number(outstandingToPay(ctx.session, loan.TotalValueOutstanding));
+    const affordable = await repayHeadroom(ctx.session, ctx.seat.address);
+    const amount = String(Math.max(outstanding, Math.min(outstanding + Number(extra), affordable)));
     return submitRepay(ctx, loan.index as string, amount, "overpay", TF_LOAN_OVERPAYMENT);
   },
 });
