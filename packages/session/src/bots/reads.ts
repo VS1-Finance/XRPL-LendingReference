@@ -186,6 +186,22 @@ export async function depositHeadroom(session: Session, holder: string): Promise
   return Math.min(vaultRoom, spendable);
 }
 
+// The most a borrower can actually pay toward its loan right now, in whole-token units. For an XRP loan
+// the borrower pays real XRP, so a payment can never exceed what the account can spend without dipping
+// below its reserve (mirroring depositHeadroom) — an overpayment past that is a guaranteed tecUNFUNDED /
+// unaffordable rejection. For an IOU or MPT loan the borrower was minted enough at provisioning to cover
+// its debt, so balance is not the binding constraint and the headroom is unbounded (Infinity). This is
+// the ceiling an overpaying bot must cap its payment to, so it never asks the ledger for more than it holds.
+export async function repayHeadroom(session: Session, borrower: string): Promise<number> {
+  if (!isXrp(session)) return Infinity;
+  const info = await session.client.request({ command: "account_info", account: borrower, ledger_index: "validated" });
+  const balanceDrops = Number(info.result.account_data.Balance);
+  const ownerCount = Number(info.result.account_data.OwnerCount ?? 0);
+  // Leave the base+owner reserve and a small fee buffer (2 XRP) untouched, exactly as depositHeadroom does.
+  const reserveDrops = 1_000_000 + 200_000 * (ownerCount + 1) + 2_000_000;
+  return Math.max(0, (balanceDrops - reserveDrops) / 1_000_000);
+}
+
 // The largest new loan the broker can currently back, given the vault's available liquidity and the
 // broker's cover headroom at its minimum cover rate. A loan may not exceed the vault's spare assets,
 // and its principal plus existing debt must stay within what the cover supports. Returns 0 when
