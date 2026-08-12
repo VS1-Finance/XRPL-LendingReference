@@ -59,13 +59,44 @@ describe("requestLoan authorization guards", () => {
     await expectActionError(() => requestLoan(s, "borrower:0", { principal: "100" }, "alice"), 404, /no owner seat/);
   });
 
-  it("409s when the borrower already has an active loan", async () => {
-    // The one-loan guard queries account_objects; a non-empty loan list means "already borrowing".
+  it("409s when the borrower already has an ACTIVE loan (payments remaining)", async () => {
+    // The one-loan guard queries account_objects; a loan with payments still remaining means the borrower
+    // is still borrowing. An active loan carries PaymentRemaining > 0 (and no defaulted flag).
     const s = fakeSession(
       [seat("borrower", 0, { kind: "human", id: "alice" }), seat("owner", 0, { kind: "bot" })],
-      [{ LedgerEntryType: "Loan" }],
+      [{ LedgerEntryType: "Loan", PaymentRemaining: 3, Flags: 0 }],
     );
     await expectActionError(() => requestLoan(s, "borrower:0", { principal: "100" }, "alice"), 409, /already has an active loan/);
+  });
+
+  it("does NOT block when the borrower's only loan is fully repaid (closed husk)", async () => {
+    // A fully-repaid loan leaves a closed Loan object whose balance fields (PaymentRemaining,
+    // TotalValueOutstanding) have been dropped by the ledger. It must not count as active — otherwise a
+    // borrower can never take a second loan after settling the first (the live bug this fixes). The guard
+    // passes, so the request proceeds to the term check; a valid principal reaches the ledger sign step,
+    // which the fake client does not implement — so we assert it gets PAST the one-loan guard, not a 409.
+    const s = fakeSession(
+      [seat("borrower", 0, { kind: "human", id: "alice" }), seat("owner", 0, { kind: "bot" })],
+      [{ LedgerEntryType: "Loan" }], // closed husk: no PaymentRemaining
+    );
+    // It must not throw the one-loan 409. It will fail later (no signer in the fake), but NOT with 409.
+    await expect(requestLoan(s, "borrower:0", { principal: "100" }, "alice")).rejects.not.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/already has an active loan/),
+    });
+  });
+
+  it("does NOT block when the borrower's only loan is defaulted", async () => {
+    // A defaulted loan (lsfLoanDefaulted = 0x00010000) is no longer a live obligation and must not block
+    // a new request either, even if PaymentRemaining is still nominally present.
+    const s = fakeSession(
+      [seat("borrower", 0, { kind: "human", id: "alice" }), seat("owner", 0, { kind: "bot" })],
+      [{ LedgerEntryType: "Loan", PaymentRemaining: 2, Flags: 0x00010000 }],
+    );
+    await expect(requestLoan(s, "borrower:0", { principal: "100" }, "alice")).rejects.not.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/already has an active loan/),
+    });
   });
 
   it("400s on an invalid term before reaching the ledger", async () => {

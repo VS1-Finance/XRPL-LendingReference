@@ -52,6 +52,10 @@ function asClientError(err: unknown): never {
 // hand what the bot does automatically.
 const TF_LOAN_DEFAULT = 65536;
 
+// lsfLoanDefaulted on a Loan ledger object — set once a loan has been defaulted. A defaulted loan is no
+// longer a live obligation, so it must not count toward the borrower's one-active-loan limit.
+const LSF_LOAN_DEFAULTED = 0x00010000;
+
 // Turns an API action request into an on-ledger transaction signed by the seat that owns it. A human
 // action and a bot action reach the ledger the same way — through the seat's signer — so this is the
 // single place a human's intent becomes a submission. The seat must be held by the requesting
@@ -249,12 +253,21 @@ export async function requestLoan(session: Session, borrowerSeatKey: string, par
   const owner = [...session.seats.values()].find((s) => s.role === "owner");
   if (!owner) throw new ActionError("session has no owner seat", 404);
 
-  // One loan per borrower at a time: reject a request while the borrower still holds a loan object,
-  // mirroring the bots' implicit one-per-borrower behaviour.
+  // One loan per borrower at a time: reject a request while the borrower still holds an ACTIVE loan.
+  // A fully-repaid loan leaves a closed Loan husk on the borrower's account — the ledger zeroes out and
+  // drops its balance fields (PaymentRemaining, TotalValueOutstanding) once it is paid off — so the mere
+  // presence of a loan object does not mean the borrower owes anything. Count only loans that are still
+  // live: not defaulted, and with payments still remaining. This mirrors the bots' payableLoan check, so
+  // a borrower can request a new loan after settling the previous one.
   const existing = await session.client.request({
     command: "account_objects", account: borrowerSeat.address, type: "loan",
   });
-  if (existing.result.account_objects.length > 0) {
+  const active = existing.result.account_objects.filter((loan) => {
+    const l = loan as unknown as Record<string, unknown>;
+    const defaulted = (Number(l.Flags ?? 0) & LSF_LOAN_DEFAULTED) !== 0;
+    return !defaulted && Number(l.PaymentRemaining ?? 0) > 0;
+  });
+  if (active.length > 0) {
     throw new ActionError("borrower already has an active loan", 409);
   }
 
