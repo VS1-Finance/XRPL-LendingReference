@@ -13,6 +13,7 @@ import {
 import type { Network } from "./config/schema.js";
 import { buildMemos } from "./memos.js";
 import { withRetry } from "./retry.js";
+import { registerLendingV11Fields } from "./codec-v11.js";
 
 const ENDPOINTS: Record<Network, string> = {
   devnet: "wss://s.devnet.rippletest.net:51233",
@@ -24,6 +25,7 @@ export function endpointFor(network: Network): string {
 }
 
 export async function connect(network: Network): Promise<Client> {
+  registerLendingV11Fields();
   const client = new Client(endpointFor(network), { connectionTimeout: 20000 });
   await withRetry(() => client.connect(), {
     attempts: 4,
