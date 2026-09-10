@@ -333,28 +333,66 @@ export async function ledgerTimeSeconds(client: Client): Promise<number> {
   return Number((res.result as { ledger: { close_time: number } }).ledger.close_time);
 }
 
+export type VaultPhase = "subscription" | "investment" | "redemption";
+
+// Derive the closed-ended vault's lifecycle phase from its dates and a ledger close time (ripple-epoch
+// seconds). Boundaries match rippled getVaultPhase EXACTLY: Subscription includes now == SubscriptionDate
+// (inclusive); Investment is strictly after SubscriptionDate and strictly BEFORE RedemptionDate; at
+// now == RedemptionDate (and after) the vault is in Redemption. Returns null for a vault that is not
+// closed-ended (VaultKind !== 1) or is missing its dates — such a vault has no phase and is not phase-gated.
+export function vaultPhase(
+  vault: { VaultKind?: unknown; SubscriptionDate?: unknown; RedemptionDate?: unknown } | Record<string, unknown>,
+  nowSeconds: number,
+): VaultPhase | null {
+  const kind = Number((vault as Record<string, unknown>).VaultKind ?? 0);
+  const sub = (vault as Record<string, unknown>).SubscriptionDate;
+  const red = (vault as Record<string, unknown>).RedemptionDate;
+  if (kind !== 1 || typeof sub !== "number" || typeof red !== "number") return null;
+  // Boundaries match rippled getVaultPhase EXACTLY (verified by re-executing its hasExpired logic):
+  // subscription is INCLUSIVE of SubscriptionDate; investment is STRICTLY before RedemptionDate; at
+  // now == RedemptionDate the ledger is already in Redemption (hasExpired(red, Inclusive) = now >= red).
+  if (nowSeconds <= sub) return "subscription";
+  if (nowSeconds < red) return "investment"; // strict: now == red is redemption, NOT investment
+  return "redemption";
+}
+
+// Seconds until the vault crosses into its next phase, for a UI countdown. Null in Redemption (terminal)
+// and for a phase-less vault.
+export function secondsUntilNextPhase(
+  vault: { VaultKind?: unknown; SubscriptionDate?: unknown; RedemptionDate?: unknown } | Record<string, unknown>,
+  nowSeconds: number,
+): number | null {
+  const phase = vaultPhase(vault, nowSeconds);
+  if (phase === null) return null;
+  const sub = Number((vault as Record<string, unknown>).SubscriptionDate);
+  const red = Number((vault as Record<string, unknown>).RedemptionDate);
+  if (phase === "subscription") return Math.max(0, sub - nowSeconds);
+  if (phase === "investment") return Math.max(0, red - nowSeconds);
+  return null;
+}
+
 // A permissive closed-ended vault window for the reference app. LendingProtocolV1_1 only lets a
 // closed-ended vault host a LoanBroker, and a closed-ended vault requires Subscription/Redemption dates
 // with a gap in [kMinInvestmentPeriod=180s, kMaxInvestmentPeriod=30 years). Dates are ripple-epoch
 // seconds (ledgerTimeSeconds already returns that clock).
 //
-// subscriptionDate must be strictly in the FUTURE relative to the ledger that validates the
-// VaultCreate transaction (else tecEXPIRED). rippled's VaultCreate::preclaim calls
-// hasExpired(SubscriptionDate) with the default ExpiryComparison::Inclusive, which treats the date as
-// expired once view.parentCloseTime() >= SubscriptionDate. The lead must be > 0 so subscriptionDate >
-// parentCloseTime at validation time (ledgers close ~4s apart). However, the lead must also be small
-// enough to elapse before lending origination, since LendingProtocolV1_1 only allows LoanSet once the
-// vault enters the Investment phase (parentCloseTime > SubscriptionDate). A ~10s lead (~2-3 Devnet
-// ledger closes) clears both: un-expired at VaultCreate, elapsed by the time provisioning + deposit
-// complete and a bot/human is ready to originate. We anchor redemptionDate exactly TEN_YEARS_SECONDS
-// after subscriptionDate (not independently off `now`) so the [180s, 30yr) gap invariant holds exactly
-// regardless of the lead.
-const SUBSCRIPTION_LEAD_SECONDS = 10;
-const TEN_YEARS_SECONDS = 10 * 365 * 24 * 3600;
-export async function closedEndedVaultWindow(client: Client): Promise<{ subscriptionDate: number; redemptionDate: number }> {
+// Default lifecycle windows. subscriptionWindowSeconds is the live subscription period (deposits open);
+// investmentWindowSeconds is the term loans run in. Both are configurable per session; defaults model a
+// real fund (3-min subscription, 1-year term) while staying inside the ledger's gap floor. Dates are
+// ripple-epoch seconds (ledgerTimeSeconds already returns that clock). subscriptionDate leads `now` by
+// the subscription window so the vault opens IN subscription with a real live window; redemptionDate is
+// anchored to subscriptionDate + the investment window so the gap invariant [180s, 30yr) holds exactly.
+const DEFAULT_SUBSCRIPTION_WINDOW_SECONDS = 180;
+const DEFAULT_INVESTMENT_WINDOW_SECONDS = 31536000; // 1 year
+export async function closedEndedVaultWindow(
+  client: Client,
+  opts?: { subscriptionWindowSeconds?: number; investmentWindowSeconds?: number },
+): Promise<{ subscriptionDate: number; redemptionDate: number }> {
   const now = await ledgerTimeSeconds(client);
-  const subscriptionDate = now + SUBSCRIPTION_LEAD_SECONDS;
-  return { subscriptionDate, redemptionDate: subscriptionDate + TEN_YEARS_SECONDS };
+  const subWindow = opts?.subscriptionWindowSeconds ?? DEFAULT_SUBSCRIPTION_WINDOW_SECONDS;
+  const invWindow = opts?.investmentWindowSeconds ?? DEFAULT_INVESTMENT_WINDOW_SECONDS;
+  const subscriptionDate = now + subWindow;
+  return { subscriptionDate, redemptionDate: subscriptionDate + invWindow };
 }
 
 // Wait until the validated ledger has advanced by at least `minLedgers` beyond where it was when
