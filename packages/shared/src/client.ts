@@ -333,6 +333,18 @@ export async function ledgerTimeSeconds(client: Client): Promise<number> {
   return Number((res.result as { ledger: { close_time: number } }).ledger.close_time);
 }
 
+// A permissive closed-ended vault window for the reference app. LendingProtocolV1_1 only lets a
+// closed-ended vault host a LoanBroker, and a closed-ended vault requires Subscription/Redemption dates
+// with a gap in [kMinInvestmentPeriod=180s, kMaxInvestmentPeriod=30 years). Dates are ripple-epoch
+// seconds (ledgerTimeSeconds already returns that clock). We open subscription at "now" (so deposits
+// work immediately, matching the app's existing open-vault behavior) and set redemption ~10 years out —
+// far enough that the demo lifecycle never bumps the window, well inside the 30-year ceiling.
+const TEN_YEARS_SECONDS = 10 * 365 * 24 * 3600;
+export async function closedEndedVaultWindow(client: Client): Promise<{ subscriptionDate: number; redemptionDate: number }> {
+  const now = await ledgerTimeSeconds(client);
+  return { subscriptionDate: now, redemptionDate: now + TEN_YEARS_SECONDS };
+}
+
 // Wait until the validated ledger has advanced by at least `minLedgers` beyond where it was when
 // called, or until `timeoutMs` elapses (whichever first). Used to pace the bot scheduler on ledger
 // progression rather than the host wall clock, so two runs with the same seed sample ledger state at
