@@ -12,7 +12,7 @@ describe("closedEndedVaultWindow", () => {
     const w = await closedEndedVaultWindow(fakeClient);
     const gap = w.redemptionDate - w.subscriptionDate;
     expect(gap).toBeGreaterThanOrEqual(180);
-    expect(gap).toBeLessThan(946080000); // 30 years in seconds
+    expect(gap).toBeLessThan(946708560); // kMaxInvestmentPeriod = std::chrono::years{30} (365.2425-day years)
     // subscriptionDate must be strictly in the future (leads `now` by the subscription window) so it
     // is not already expired by the time the tx validates (rippled's Inclusive hasExpired check).
     expect(w.subscriptionDate).toBeGreaterThan(NOW);
