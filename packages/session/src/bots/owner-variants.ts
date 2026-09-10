@@ -1,5 +1,5 @@
-import { signLoanSetByCounterparty, type Client } from "xrpl";
-import { deriveAccount, ledgerTimeSeconds } from "@lending/shared";
+import { type Client } from "xrpl";
+import { deriveAccount, ledgerTimeSeconds, signLoanSetByCounterpartyCPT } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
 import { brokerValue, loanNode, ownerLoanId, maxOriginatable } from "./reads.js";
@@ -61,7 +61,7 @@ export const loanOriginator = (principal = "10000"): BotVariant => ({
     const borrowerWallet = deriveAccount(ctx.session.seed, "borrower", target.index).wallet;
     const prepared = await ctx.session.client.autofill(loanSet);
     const ownerSigned = ownerWallet.sign(prepared);
-    const combined = signLoanSetByCounterparty(borrowerWallet, ownerSigned.tx_blob);
+    const combined = signLoanSetByCounterpartyCPT(borrowerWallet, ownerSigned.tx_blob);
     const res = await ctx.session.client.submitAndWait(combined.tx_blob);
     const meta = res.result.meta;
     const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";

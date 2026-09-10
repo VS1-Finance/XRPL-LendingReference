@@ -1,6 +1,6 @@
-import { signLoanSetByCounterparty, xrpToDrops } from "xrpl";
+import { xrpToDrops } from "xrpl";
 import type { Amount, MPTAmount, SubmittableTransaction } from "xrpl";
-import { clampIssuedValueUp, decimalToScaled, deriveAccount } from "@lending/shared";
+import { clampIssuedValueUp, decimalToScaled, deriveAccount, signLoanSetByCounterpartyCPT } from "@lending/shared";
 import type { Session } from "@lending/session";
 
 export interface ActionRequest {
@@ -261,7 +261,7 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
   try {
     const prepared = await session.client.autofill(loanSet);
     const ownerSigned = ownerWallet.sign(prepared);
-    const combined = signLoanSetByCounterparty(borrowerWallet, ownerSigned.tx_blob);
+    const combined = signLoanSetByCounterpartyCPT(borrowerWallet, ownerSigned.tx_blob);
     const res = await session.client.submitAndWait(combined.tx_blob);
     const meta = res.result.meta;
     const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";
@@ -328,7 +328,7 @@ export async function requestLoan(session: Session, borrowerSeatKey: string, par
   try {
     const prepared = await session.client.autofill(loanSet);
     const ownerSigned = ownerWallet.sign(prepared);
-    const combined = signLoanSetByCounterparty(borrowerWallet, ownerSigned.tx_blob);
+    const combined = signLoanSetByCounterpartyCPT(borrowerWallet, ownerSigned.tx_blob);
     const res = await session.client.submitAndWait(combined.tx_blob);
     const meta = res.result.meta;
     const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";

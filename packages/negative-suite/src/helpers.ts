@@ -1,5 +1,5 @@
-import { Wallet, signLoanSetByCounterparty, xrpToDrops, type Amount } from "xrpl";
-import { buildMemos, submitOrThrow, withRetry, type SubmitContext } from "@lending/shared";
+import { Wallet, xrpToDrops, type Amount } from "xrpl";
+import { buildMemos, submitOrThrow, withRetry, type SubmitContext, signLoanSetByCounterpartyCPT } from "@lending/shared";
 import type { CaseContext } from "./types.js";
 
 // A credential type is readable ASCII in config and hex on the ledger.
@@ -112,7 +112,7 @@ export async function originateLoan(ctx: CaseContext, borrower: Wallet, terms: L
   };
   const prepared = await ctx.client.autofill(loanSet);
   const ownerSigned = ctx.wallets.owner.sign(prepared);
-  const combined = signLoanSetByCounterparty(borrower, ownerSigned.tx_blob);
+  const combined = signLoanSetByCounterpartyCPT(borrower, ownerSigned.tx_blob);
   const res = await ctx.client.submitAndWait(combined.tx_blob);
   const meta = res.result.meta;
   const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";

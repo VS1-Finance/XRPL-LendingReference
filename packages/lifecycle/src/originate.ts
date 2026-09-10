@@ -1,5 +1,5 @@
-import { correlationId, buildMemos } from "@lending/shared";
-import { signLoanSetByCounterparty, type Client } from "xrpl";
+import { correlationId, buildMemos, signLoanSetByCounterpartyCPT } from "@lending/shared";
+import { type Client } from "xrpl";
 import { brokerValue, findLoanId, issuedAssetBalance } from "./ledger.js";
 import type { LifecycleStep, ProvisionedEnvironment } from "./types.js";
 import type { ResolvedAccount } from "./environment.js";
@@ -53,7 +53,7 @@ export async function originate(
 
   const prepared = await client.autofill(loanSet);
   const ownerSigned = owner.wallet.sign(prepared);
-  const combined = signLoanSetByCounterparty(borrower.wallet, ownerSigned.tx_blob);
+  const combined = signLoanSetByCounterpartyCPT(borrower.wallet, ownerSigned.tx_blob);
   const res = await client.submitAndWait(combined.tx_blob);
 
   const meta = res.result.meta;
