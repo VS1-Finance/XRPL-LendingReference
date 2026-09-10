@@ -3,7 +3,7 @@ import { closedEndedVaultWindow } from "./client.js";
 import type { Client } from "xrpl";
 
 const NOW = 800000000; // ripple-epoch seconds
-const SUBSCRIPTION_LEAD_SECONDS = 300;
+const SUBSCRIPTION_LEAD_SECONDS = 10;
 const TEN_YEARS_SECONDS = 10 * 365 * 24 * 3600;
 const fakeClient = { request: async () => ({ result: { ledger: { close_time: NOW } } }) } as unknown as Client;
 
