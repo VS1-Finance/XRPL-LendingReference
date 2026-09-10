@@ -1,6 +1,14 @@
 import { xrpToDrops } from "xrpl";
 import type { Amount, MPTAmount, SubmittableTransaction } from "xrpl";
-import { clampIssuedValueUp, decimalToScaled, deriveAccount, signLoanSetByCounterpartyCPT } from "@lending/shared";
+import {
+  clampIssuedValueUp,
+  decimalToScaled,
+  deriveAccount,
+  ledgerTimeSeconds,
+  signLoanSetByCounterpartyCPT,
+  vaultPhase,
+} from "@lending/shared";
+import type { VaultPhase } from "@lending/shared";
 import type { Session } from "@lending/session";
 
 export interface ActionRequest {
@@ -80,6 +88,50 @@ export function loanPayFlags(paymentType: string | undefined): number | undefine
   return flag;
 }
 
+// Which phases each phase-gated action is allowed in. Closed-ended vault lifecycle: subscription (open
+// for deposits) → investment (loans originate, no deposits/withdrawals) → redemption (withdrawals only).
+// Any action not in this map is ungated — repay, manage-loan, credential actions, etc. are allowed in
+// every phase (and on a non-closed-ended vault, where phase is always null).
+const ALLOWED_PHASES: Record<string, ReadonlySet<VaultPhase>> = {
+  deposit: new Set(["subscription"]),
+  originate: new Set(["investment"]),
+  "request-loan": new Set(["investment"]),
+  withdraw: new Set(["subscription", "redemption"]),
+};
+
+// Pure phase gate: does `action` belong in `phase`? Returns a clean ActionError(409) when it does not,
+// so the caller can front-run the ledger's opaque tecEXPIRED/tecTOO_SOON with a readable rejection
+// before ever building or submitting a transaction. `phase === null` means either a non-closed-ended
+// vault or a vault whose dates could not be read — either way there is no lifecycle to gate against, so
+// nothing is blocked. An action absent from ALLOWED_PHASES is likewise never gated.
+export function phaseGateError(action: string, phase: VaultPhase | null): ActionError | undefined {
+  if (phase === null) return undefined;
+  const allowed = ALLOWED_PHASES[action];
+  if (!allowed || allowed.has(phase)) return undefined;
+  return new ActionError(`${action} is not allowed during the ${phase} phase`, 409);
+}
+
+// Reads the owner's vault object (there is at most one per session) and derives its current phase from
+// the last-validated ledger's close time. Returns null when there is no vault object yet, or when
+// vaultPhase itself returns null (non-closed-ended vault, or a vault missing its dates) — either way the
+// caller treats it as ungated. This is the only vault read on the phase-gated paths; every other action
+// skips it entirely.
+async function currentVaultPhase(session: Session): Promise<VaultPhase | null> {
+  const res = await session.client.request({
+    command: "account_objects",
+    account: session.env.accounts.owner.address,
+    type: "vault",
+    ledger_index: "validated",
+  });
+  const vault = (res.result.account_objects as unknown as Record<string, unknown>[])[0];
+  if (!vault) return null;
+  return vaultPhase(vault, await ledgerTimeSeconds(session.client));
+}
+
+// Actions gated by dispatchAction's own phase check — deposit and withdraw. originate/request-loan are
+// gated separately in their own functions since they bypass dispatchAction entirely.
+const DISPATCH_GATED_ACTIONS = new Set(["deposit", "withdraw"]);
+
 // Turns an API action request into an on-ledger transaction signed by the seat that owns it. A human
 // action and a bot action reach the ledger the same way — through the seat's signer — so this is the
 // single place a human's intent becomes a submission. The seat must be held by the requesting
@@ -89,6 +141,14 @@ export async function dispatchAction(session: Session, request: ActionRequest, p
   if (!seat) throw new ActionError(`session has no seat ${request.seat}`, 404);
   if (seat.occupant.kind !== "human" || seat.occupant.id !== participant) {
     throw new ActionError(`${request.seat} is not held by ${participant}`, 409);
+  }
+
+  // Front-run the ledger's opaque tec-code with a clean 409 — but only for deposit/withdraw, so every
+  // other action (repay, manage-loan, credential actions...) adds no vault read at all.
+  if (DISPATCH_GATED_ACTIONS.has(request.action)) {
+    const phase = await currentVaultPhase(session);
+    const gateError = phaseGateError(request.action, phase);
+    if (gateError) throw gateError;
   }
 
   try {
@@ -234,6 +294,9 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
   if (!borrowerSeat) throw new ActionError(`session has no seat ${params.borrower}`, 404);
   if (borrowerSeat.role !== "borrower") throw new ActionError(`${borrowerSeat.role} seat cannot be a loan counterparty`, 409);
 
+  const originateGateError = phaseGateError("originate", await currentVaultPhase(session));
+  if (originateGateError) throw originateGateError;
+
   const term = paymentTotal(params.paymentTotal);
   const loanSet = {
     TransactionType: "LoanSet" as const,
@@ -302,6 +365,9 @@ export async function requestLoan(session: Session, borrowerSeatKey: string, par
   if (active.length > 0) {
     throw new ActionError("borrower already has an active loan", 409);
   }
+
+  const requestLoanGateError = phaseGateError("request-loan", await currentVaultPhase(session));
+  if (requestLoanGateError) throw requestLoanGateError;
 
   const term = paymentTotal(params.paymentTotal);
   const loanSet = {

@@ -26,7 +26,7 @@ function fakeSession(seats: Seat[], loanObjects: unknown[] = []): Session {
     seed: "test-seed",
     seats: map,
     client,
-    env: { objects: { brokerId: "B" } },
+    env: { objects: { brokerId: "B" }, accounts: { owner: { address: "rOwner" } } },
   } as unknown as Session;
 }
 
