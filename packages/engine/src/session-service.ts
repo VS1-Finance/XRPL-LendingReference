@@ -100,6 +100,46 @@ export function resolveMptAssetScale(scale: unknown): number | undefined {
   return scale;
 }
 
+// Validate the closed-ended vault subscription/investment windows from untyped request fields, BEFORE
+// any provisioning, so a bad value is a fast 400 rather than a ledger-side tecNO_PERMISSION/temMALFORMED
+// mid-provision. The route has no JSON schema, and create() assembles the per-session config by
+// spreading the base config directly (never re-parsed through ConfigSchema — the same bypass the
+// mptAssetScale finding uncovered), so ConfigSchema's .min/.max on these fields does NOT protect this
+// path. Mirror resolveMptAssetScale/resolveLoanDefaults and reject here. Bounds match the ledger's
+// kMinInvestmentPeriod (180s) and kMaxInvestmentPeriod (946708560s, exclusive). Each field is
+// independently optional; an omitted field returns undefined so the base config's value (or its own
+// default) applies downstream.
+export function resolveVaultWindows(opts: {
+  subscriptionWindowSeconds?: unknown;
+  investmentWindowSeconds?: unknown;
+}): { subscriptionWindowSeconds?: number; investmentWindowSeconds?: number } {
+  const out: { subscriptionWindowSeconds?: number; investmentWindowSeconds?: number } = {};
+  if (opts.subscriptionWindowSeconds !== undefined && opts.subscriptionWindowSeconds !== null) {
+    const v = opts.subscriptionWindowSeconds;
+    if (typeof v !== "number" || !Number.isInteger(v)) {
+      throw new ValidationError("subscriptionWindowSeconds must be an integer");
+    }
+    if (v < 1) {
+      throw new ValidationError("subscriptionWindowSeconds must be >= 1");
+    }
+    out.subscriptionWindowSeconds = v;
+  }
+  if (opts.investmentWindowSeconds !== undefined && opts.investmentWindowSeconds !== null) {
+    const v = opts.investmentWindowSeconds;
+    if (typeof v !== "number" || !Number.isInteger(v)) {
+      throw new ValidationError("investmentWindowSeconds must be an integer");
+    }
+    if (v < 180) {
+      throw new ValidationError("investmentWindowSeconds must be >= 180");
+    }
+    if (v >= 946708560) {
+      throw new ValidationError("investmentWindowSeconds must be < 946708560");
+    }
+    out.investmentWindowSeconds = v;
+  }
+  return out;
+}
+
 function clampPool(requested: number | undefined, fallback: number): number {
   const n = typeof requested === "number" && Number.isFinite(requested) ? Math.round(requested) : fallback;
   return Math.max(1, Math.min(MAX_POOL, n));
@@ -181,6 +221,10 @@ export class SessionService {
     // Whether the vault is permissioned (domain-gated, the default) or public (open, no domain and no
     // credentials). Omit or true → permissioned; false → public.
     permissioned?: boolean;
+    // Closed-ended vault lifecycle windows, in seconds. Omitted → the base config's values (which
+    // themselves default to 180 / 31536000 — see ConfigSchema).
+    subscriptionWindowSeconds?: number;
+    investmentWindowSeconds?: number;
     onStep?: (record: StepRecord) => void;
   } = {}): Promise<SessionSummary> {
     const token = this.uniqueToken(opts.label);
@@ -188,6 +232,9 @@ export class SessionService {
     const botSeed = resolveBotSeed(opts.botSeed, token);
     // Validated up front (400 on a bad value) rather than reaching 10^scale shaping mid-provision.
     const mptAssetScale = resolveMptAssetScale(opts.mptAssetScale);
+    // Validated up front (400 on a bad value) — the assembled config below spreads the base config
+    // directly and is never re-parsed through ConfigSchema, so this is the only guard on the request path.
+    const vaultWindows = resolveVaultWindows(opts);
     // The create request's explicit loan defaults take precedence; any field it omits falls back to the
     // deployment config's loanDefaults (already validated + scaled by ConfigSchema). A field absent from
     // both leaves no session default, so origination uses the engine's hardcoded fallback.
@@ -232,6 +279,8 @@ export class SessionService {
       ...(opts.coverRatePercent !== undefined ? { coverRateMinimum: pctToScaled(opts.coverRatePercent) } : {}),
       ...(opts.liquidationRatePercent !== undefined ? { coverRateLiquidation: pctToScaled(opts.liquidationRatePercent) } : {}),
       ...(opts.managementFeePercent !== undefined ? { managementFeeRate: pctToScaled(opts.managementFeePercent) } : {}),
+      ...(vaultWindows.subscriptionWindowSeconds !== undefined ? { subscriptionWindowSeconds: vaultWindows.subscriptionWindowSeconds } : {}),
+      ...(vaultWindows.investmentWindowSeconds !== undefined ? { investmentWindowSeconds: vaultWindows.investmentWindowSeconds } : {}),
     };
     const session = await createSession(config, opts.onStep);
     this.registry.register(session);

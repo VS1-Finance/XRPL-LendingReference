@@ -69,6 +69,15 @@ export const ConfigSchema = z
     // Maximum aggregate debt the broker may originate, in whole asset units.
     debtMaximum: z.string().regex(/^\d+(\.\d+)?$/, "debtMaximum must be a positive decimal string"),
 
+    // Closed-ended vault lifecycle windows, in seconds. subscriptionWindowSeconds is how long the
+    // Subscription (deposit) window stays open; investmentWindowSeconds is the gap between the
+    // subscription close and the redemption date (the ledger's kMinInvestmentPeriod=180s..
+    // kMaxInvestmentPeriod=946708560s-exclusive bound). Both are configurable per session (see
+    // session-service's resolveVaultWindows for the request-path guard — per-session overrides bypass
+    // this schema and must be validated separately).
+    subscriptionWindowSeconds: z.number().int().min(1).default(180),
+    investmentWindowSeconds: z.number().int().min(180).max(946708559).default(31536000),
+
     pool: z.object({
       depositors: z.number().int().min(1),
       borrowers: z.number().int().min(1),
