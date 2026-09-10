@@ -35,7 +35,11 @@ export async function runSuite(options: RunnerOptions): Promise<SuiteResult> {
   // revoke a spare without disturbing the others.
   if (baseCases.length) {
     log("provisioning base environment for credential and vault cases");
-    const env = await provisionFor(options.config, `${seed}-base`, "neg-base");
+    // The base cases run SEQUENTIALLY against ONE shared environment (below), each doing
+    // outsider-funding plus a deposit — several minutes of wall-clock for the full sweep. A long
+    // window (10 min) keeps the shared vault in Subscription through the whole sweep; none of these
+    // cases originate a loan, so there is no need to ever cross into Investment.
+    const env = await provisionFor(options.config, `${seed}-base`, "neg-base", 600);
     const client = await connect(network);
     try {
       const ctx = context(client, env, `${seed}-base`);
@@ -49,7 +53,9 @@ export async function runSuite(options: RunnerOptions): Promise<SuiteResult> {
   for (const c of loanCases) {
     log(`provisioning dedicated environment for ${c.id}`);
     const caseSeed = `${seed}-${c.id.toLowerCase()}`;
-    const env = await provisionFor(options.config, caseSeed, `neg-${c.id.toLowerCase()}`);
+    // Each dedicated environment runs exactly one case, which originates a loan — a short window so
+    // originateLoan's waitForInvestmentPhase wait crosses into Investment in a handful of ledgers.
+    const env = await provisionFor(options.config, caseSeed, `neg-${c.id.toLowerCase()}`, 120);
     const client = await connect(network);
     try {
       const ctx = context(client, env, caseSeed);
@@ -89,18 +95,28 @@ async function runOne(c: NegativeCase, ctx: CaseContext, log: (m: string) => voi
   }
 }
 
-async function provisionFor(base: Config, seed: string, setupId: string): Promise<ProvisionedEnvironment> {
+async function provisionFor(
+  base: Config,
+  seed: string,
+  setupId: string,
+  subscriptionWindowSeconds: number,
+): Promise<ProvisionedEnvironment> {
   // Ensure at least two depositors so the revocation case has a spare. The subscription window must
-  // comfortably exceed per-case provisioning wall-clock (funding, credentials, domain, vault-create,
-  // broker, cover — observed ~40-70s on Devnet) plus the case's own ensureDeposit, or the vault can
-  // leave Subscription before the deposit lands, rejecting it with tecEXPIRED. 120s gives that margin
-  // while still letting waitForInvestmentPhase (helpers.ts) cross into Investment in a handful of
-  // ledgers rather than minutes — this only affects suite wall-clock, not correctness.
+  // comfortably exceed the wall-clock the vault needs to stay IN Subscription for its caller, or a
+  // deposit lands after the vault has already left Subscription and is rejected with tecEXPIRED. Two
+  // regimes, both passed explicitly by the caller:
+  //  - the shared base environment (all non-loan-originating cases run sequentially against it, each
+  //    doing outsider-funding plus a deposit — several minutes for the full sweep) needs a LONG window
+  //    so it stays in Subscription through the entire sweep; it never originates, so it never needs to
+  //    cross into Investment.
+  //  - each loan case's dedicated environment (one case, which originates via originateLoan) needs a
+  //    SHORT window so waitForInvestmentPhase (helpers.ts) crosses into Investment in a handful of
+  //    ledgers rather than minutes — this only affects suite wall-clock, not correctness.
   const config: Config = {
     ...base,
     seed,
     setupId,
-    subscriptionWindowSeconds: 120,
+    subscriptionWindowSeconds,
     pool: { depositors: Math.max(2, base.pool.depositors), borrowers: Math.max(1, base.pool.borrowers) },
   };
   return provision(config, {});
