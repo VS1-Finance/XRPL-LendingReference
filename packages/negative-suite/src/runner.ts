@@ -90,11 +90,14 @@ async function runOne(c: NegativeCase, ctx: CaseContext, log: (m: string) => voi
 }
 
 async function provisionFor(base: Config, seed: string, setupId: string): Promise<ProvisionedEnvironment> {
-  // Ensure at least two depositors so the revocation case has a spare.
+  // Ensure at least two depositors so the revocation case has a spare. A short subscription window
+  // (vs. the 180s default) lets waitForInvestmentPhase (helpers.ts) cross into Investment in a couple
+  // of ledgers rather than minutes — this only affects suite wall-clock, not correctness.
   const config: Config = {
     ...base,
     seed,
     setupId,
+    subscriptionWindowSeconds: 20,
     pool: { depositors: Math.max(2, base.pool.depositors), borrowers: Math.max(1, base.pool.borrowers) },
   };
   return provision(config, {});
