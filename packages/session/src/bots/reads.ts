@@ -1,5 +1,5 @@
 import { xrpToDrops, type Amount, type Client, type MPTAmount } from "xrpl";
-import { clampIssuedValueUp, decimalToScaled, dropsToXrpString, scaledToDecimal } from "@lending/shared";
+import { clampIssuedValueUp, decimalToScaled, dropsToXrpString, scaledToDecimal, vaultPhase, ledgerTimeSeconds } from "@lending/shared";
 import type { Session } from "../session.js";
 
 // Whether the session asset is native XRP (currency "XRP" with no issuer) rather than an issued token.
@@ -230,4 +230,13 @@ export async function maxOriginatable(session: Session): Promise<number> {
   // is rejected (tecLIMIT_EXCEEDED) the moment any interest accrues. Originate at most 80% of the
   // headroom so principal plus interest stays within cover for the bot's loan terms.
   return Math.max(0, Math.floor(ceiling * 0.8));
+}
+
+// The vault phase now, for a closed-ended vault, used by phase-gated bots to check if they should act.
+// Returns "subscription", "investment", "redemption", or null if the vault is not closed-ended or not found.
+export async function vaultPhaseNow(session: Session): Promise<ReturnType<typeof vaultPhase>> {
+  const vault = await ownerObject(session, "vault");
+  if (!vault) return null;
+  const now = await ledgerTimeSeconds(session.client);
+  return vaultPhase(vault, now);
 }

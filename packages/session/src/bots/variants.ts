@@ -1,6 +1,6 @@
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { assetAmount, depositHeadroom, outstandingToPay, payableLoan, shareBalance } from "./reads.js";
+import { assetAmount, depositHeadroom, outstandingToPay, payableLoan, shareBalance, vaultPhaseNow } from "./reads.js";
 
 // A depositor bot that supplies liquidity once and then holds. On each tick it deposits the target
 // amount if it holds no shares yet; once it has shares it does nothing further.
@@ -8,6 +8,8 @@ export const depositAndHold = (targetValue = "20000"): BotVariant => ({
   role: "depositor",
   name: "deposit-and-hold",
   async tick(ctx: BotContext): Promise<StepOutcome> {
+    if (await vaultPhaseNow(ctx.session) !== "subscription") return idle;
+
     const shareMptId = ctx.session.env.objects.shareMptId!;
     const held = await shareBalance(ctx.session.client, ctx.seat.address, shareMptId);
     if (held > 0n) return idle;

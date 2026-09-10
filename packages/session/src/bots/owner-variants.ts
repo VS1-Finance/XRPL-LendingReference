@@ -2,7 +2,7 @@ import { type Client } from "xrpl";
 import { deriveAccount, ledgerTimeSeconds, signLoanSetByCounterpartyCPT } from "@lending/shared";
 import type { BotContext, BotVariant, StepOutcome } from "./variant.js";
 import { idle } from "./variant.js";
-import { brokerValue, loanNode, ownerLoanId, maxOriginatable } from "./reads.js";
+import { brokerValue, loanNode, ownerLoanId, maxOriginatable, vaultPhaseNow } from "./reads.js";
 
 // tfLoanDefault on LoanManage.
 const TF_LOAN_DEFAULT = 65536;
@@ -23,6 +23,8 @@ export const loanOriginator = (principal = "10000"): BotVariant => ({
   role: "owner",
   name: "loan-originator",
   async tick(ctx: BotContext): Promise<StepOutcome> {
+    if (await vaultPhaseNow(ctx.session) !== "investment") return idle;
+
     // Find a borrower that has no loan yet.
     let target: { address: string; index: number } | undefined;
     for (const b of ctx.session.env.accounts.borrowers) {
