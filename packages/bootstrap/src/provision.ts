@@ -29,6 +29,7 @@ import {
   createDomain,
   createVault,
   depositCover,
+  seedVaultLiquidity,
 } from "./steps.js";
 import { saveEnvironment } from "./store.js";
 import type { ProvisionedAccount, ProvisionedEnvironment, StepRecord } from "./types.js";
@@ -139,6 +140,11 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
     await depositCover(deps);
     const { cover } = await assertCoverMeetsMinimum(client, accounts.owner.address, config.coverAmount);
     log(`cover seeded: ${cover}`);
+
+    // The vault is still in Subscription here (provisioning completes well within the default 180s
+    // window), so the owner's VaultDeposit is allowed — this seeds lendable liquidity for Investment.
+    await seedVaultLiquidity(deps);
+    log("seeded vault liquidity");
 
     const path = saveEnvironment(env, options.outDir);
     log(`wrote ${path}`);
