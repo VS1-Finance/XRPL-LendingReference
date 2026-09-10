@@ -90,14 +90,17 @@ async function runOne(c: NegativeCase, ctx: CaseContext, log: (m: string) => voi
 }
 
 async function provisionFor(base: Config, seed: string, setupId: string): Promise<ProvisionedEnvironment> {
-  // Ensure at least two depositors so the revocation case has a spare. A short subscription window
-  // (vs. the 180s default) lets waitForInvestmentPhase (helpers.ts) cross into Investment in a couple
-  // of ledgers rather than minutes — this only affects suite wall-clock, not correctness.
+  // Ensure at least two depositors so the revocation case has a spare. The subscription window must
+  // comfortably exceed per-case provisioning wall-clock (funding, credentials, domain, vault-create,
+  // broker, cover — observed ~40-70s on Devnet) plus the case's own ensureDeposit, or the vault can
+  // leave Subscription before the deposit lands, rejecting it with tecEXPIRED. 120s gives that margin
+  // while still letting waitForInvestmentPhase (helpers.ts) cross into Investment in a handful of
+  // ledgers rather than minutes — this only affects suite wall-clock, not correctness.
   const config: Config = {
     ...base,
     seed,
     setupId,
-    subscriptionWindowSeconds: 20,
+    subscriptionWindowSeconds: 120,
     pool: { depositors: Math.max(2, base.pool.depositors), borrowers: Math.max(1, base.pool.borrowers) },
   };
   return provision(config, {});

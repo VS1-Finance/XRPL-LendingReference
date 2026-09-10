@@ -101,10 +101,12 @@ export interface LoanTerms {
 // Subscription into Investment. Poll the owner's vault object (account_objects, type "vault") and its
 // phase (vaultPhase against the current ledger close time) until it reads "investment", advancing at
 // least one ledger between checks. A single waitForLedgerAdvance is NOT safe here — its default
-// timeout (15s, client.ts) can fire before a short subscription window closes — so this loops with its
-// own generous overall deadline instead.
+// timeout (15s, client.ts) can fire before the subscription window closes — so this loops with its own
+// generous overall deadline instead. The deadline must exceed the suite's subscriptionWindowSeconds
+// (runner.ts's provisionFor, currently 120s) plus margin, or this could throw before the vault ever
+// reaches Investment; 180s covers a 120s window with 60s of margin for provisioning/poll latency.
 export async function waitForInvestmentPhase(ctx: CaseContext): Promise<void> {
-  const deadline = Date.now() + 120_000; // generous overall cap; the window is ~20s so this loops a handful of times
+  const deadline = Date.now() + 180_000; // must exceed the suite's subscriptionWindowSeconds (120s) + margin
   while (Date.now() < deadline) {
     const objs = await ctx.client.request({
       command: "account_objects",
