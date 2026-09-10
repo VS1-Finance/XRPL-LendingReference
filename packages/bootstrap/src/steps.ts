@@ -1,6 +1,7 @@
 import {
   type Config,
   type DerivedAccountSet,
+  closedEndedVaultWindow,
   correlationId,
   decimalToScaled,
   isXrpAsset,
@@ -485,9 +486,18 @@ export async function createVault(deps: StepDeps): Promise<void> {
       ? { mpt_issuance_id: requireAssetMptId(deps) }
       : { currency: deps.config.asset.currency, issuer: deps.accounts.issuer.address };
 
+  // LendingProtocolV1_1: a LoanBroker can only attach to a CLOSED-ENDED vault. Compute the window here
+  // (before runBatch, since build() below must stay synchronous) and close over it in build().
+  const window = await closedEndedVaultWindow(deps.client);
+
   await runBatch(deps, [{
     action: "vault-create",
-    alreadyDone: async () => (await findVault(deps.client, owner.address)) !== undefined,
+    // Only a CLOSED-ENDED vault counts as already-provisioned — a stale open-ended vault from a
+    // pre-fix run must not skip this create (see findVault's vaultKind).
+    alreadyDone: async () => {
+      const v = await findVault(deps.client, owner.address);
+      return v !== undefined && v.vaultKind === 1;
+    },
     build: () => ({
       wallet: owner,
       tx: {
@@ -496,7 +506,13 @@ export async function createVault(deps: StepDeps): Promise<void> {
         Asset: asset,
         ...(permissioned ? { DomainID: domainId, Flags: VaultCreateFlags.tfVaultPrivate } : {}),
         WithdrawalPolicy: VaultWithdrawalPolicy.vaultStrategyFirstComeFirstServe,
-      },
+        // VaultKind=1 (ClosedEnded) plus a Subscription/Redemption window makes createBroker's
+        // LoanBrokerSet succeed instead of tecNO_PERMISSION. Fields are cast in because they postdate
+        // the xrpl VaultCreate model; the codec already serializes them (registered on connect).
+        VaultKind: 1,
+        SubscriptionDate: window.subscriptionDate,
+        RedemptionDate: window.redemptionDate,
+      } as unknown as SubmittableTransaction,
     }),
   }]);
   const vault = await findVault(deps.client, owner.address);

@@ -14,11 +14,11 @@ export async function findDomainId(client: Client, owner: string): Promise<strin
   return objs[0]?.index as string | undefined;
 }
 
-export async function findVault(client: Client, owner: string): Promise<{ index: string; shareMptId?: string } | undefined> {
+export async function findVault(client: Client, owner: string): Promise<{ index: string; shareMptId?: string; vaultKind?: number } | undefined> {
   const objs = await accountObjects(client, owner, "vault");
   const vault = objs[0];
   if (!vault) return undefined;
-  return { index: vault.index as string, shareMptId: vault.ShareMPTID as string | undefined };
+  return { index: vault.index as string, shareMptId: vault.ShareMPTID as string | undefined, vaultKind: vault.VaultKind as number | undefined };
 }
 
 export async function findBrokerId(client: Client, owner: string): Promise<string | undefined> {
