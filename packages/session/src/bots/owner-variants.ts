@@ -7,6 +7,12 @@ import { brokerValue, loanNode, ownerLoanId, maxOriginatable } from "./reads.js"
 // tfLoanDefault on LoanManage.
 const TF_LOAN_DEFAULT = 65536;
 
+// tfLoanOverpayment on LoanSet — permits overpayment on the originated loan. Bots originate most loans in
+// a session, so without this flag on the owner bot's LoanSet the overpay borrower variant would fail with
+// tecNO_PERMISSION on every bot-originated loan (the deployed failure mode). Same numeric value as the
+// LoanSet overpayment flag; distinct in meaning from TF_LOAN_DEFAULT above (a LoanManage flag).
+const TF_LOAN_SET_OVERPAYMENT = 65536;
+
 // The owner behaviour that keeps the lending cycle turning: each round it looks for a borrower without
 // a loan and originates one to it, so the market lends unattended rather than waiting for a human to
 // play originator. Origination is bilateral — the owner and the borrower counter-sign one LoanSet — so
@@ -46,6 +52,7 @@ export const loanOriginator = (principal = "10000"): BotVariant => ({
       PaymentInterval: 60,
       GracePeriod: 60,
       LoanOriginationFee: "0",
+      Flags: TF_LOAN_SET_OVERPAYMENT,
     };
 
     // Two raw signatures on one transaction: the owner signs, the borrower counter-signs. Both wallets

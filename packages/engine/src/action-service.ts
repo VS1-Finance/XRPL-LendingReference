@@ -56,6 +56,30 @@ const TF_LOAN_DEFAULT = 65536;
 // longer a live obligation, so it must not count toward the borrower's one-active-loan limit.
 const LSF_LOAN_DEFAULTED = 0x00010000;
 
+// tfLoanOverpayment on LoanSet — the origination flag that PERMITS a borrower to overpay this loan later.
+// Without it the ledger rejects any LoanPay carrying tfLoanOverpayment with tecNO_PERMISSION, so the
+// overpay bot variant fails every time. Set it at origination so an overpayment is a valid action on the
+// loan. (This is the LoanSet flag; the matching LoanPay flag of the same numeric value is set per-payment
+// by the paying side — see the borrower bot variants.)
+const TF_LOAN_SET_OVERPAYMENT = 0x00010000;
+
+// LoanPay flags, one per payment (the ledger permits at most one). Each selects the payment rule the
+// ledger applies; the matching action is otherwise rejected (late→tecEXPIRED, overpay→tecNO_PERMISSION).
+const LOAN_PAY_FLAGS: Record<string, number> = {
+  overpayment: 0x00010000, // tfLoanOverpayment
+  full: 0x00020000, // tfLoanFullPayment — settle the whole balance early
+  late: 0x00040000, // tfLoanLatePayment — pay after the due date
+};
+
+// Maps an optional payment-type string from a repay request to its single LoanPay flag. An unknown or
+// omitted type carries no flag — an ordinary on-schedule payment.
+export function loanPayFlags(paymentType: string | undefined): number | undefined {
+  if (!paymentType) return undefined;
+  const flag = LOAN_PAY_FLAGS[paymentType];
+  if (flag === undefined) throw new ActionError(`unknown paymentType ${paymentType}`, 400);
+  return flag;
+}
+
 // Turns an API action request into an on-ledger transaction signed by the seat that owns it. A human
 // action and a bot action reach the ledger the same way — through the seat's signer — so this is the
 // single place a human's intent becomes a submission. The seat must be held by the requesting
@@ -98,11 +122,16 @@ async function buildTransaction(session: Session, account: string, request: Acti
 
     case "repay": {
       const loanId = required(p, "loanId");
+      // An optional payment type selects the single LoanPay flag the ledger needs for that behavior: a
+      // late payment (past the due date), a full early settlement, or an overpayment. Omitted → an
+      // ordinary on-schedule payment with no flag. Only one flag may be set on a LoanPay.
+      const flags = loanPayFlags(p.paymentType);
       return {
         TransactionType: "LoanPay",
         Account: account,
         LoanID: loanId,
         Amount: assetAmount(session, clampIssuedValueUp(required(p, "amount"))),
+        ...(flags !== undefined ? { Flags: flags } : {}),
       };
     }
 
@@ -218,6 +247,9 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
     GracePeriod: Number(params.grace ?? 60),
     ...(term !== undefined ? { PaymentTotal: term } : {}),
     LoanOriginationFee: "0",
+    // Permit overpayment on this loan so the overpay bot variant (and any borrower) can pay more than the
+    // scheduled amount without a tecNO_PERMISSION. Without this LoanSet flag the ledger disallows it.
+    Flags: TF_LOAN_SET_OVERPAYMENT,
   };
 
   // Origination needs two raw signatures on one transaction, which the single-signer submit path does
@@ -283,6 +315,9 @@ export async function requestLoan(session: Session, borrowerSeatKey: string, par
     GracePeriod: Number(params.grace ?? 60),
     ...(term !== undefined ? { PaymentTotal: term } : {}),
     LoanOriginationFee: "0",
+    // Permit overpayment on this loan so the overpay bot variant (and any borrower) can pay more than the
+    // scheduled amount without a tecNO_PERMISSION. Without this LoanSet flag the ledger disallows it.
+    Flags: TF_LOAN_SET_OVERPAYMENT,
   };
 
   // The owner index comes from the resolved owner seat and the borrower index from the caller's seat,

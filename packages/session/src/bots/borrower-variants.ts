@@ -49,13 +49,21 @@ export const repayLate = (): BotVariant => ({
     if (due && now < due) return idle; // not late yet — hold off until past due
 
     const amount = outstandingToPay(ctx.session, loan.TotalValueOutstanding);
-    return submitRepay(ctx, loan.index as string, amount, "late repay");
+    // Past the due date, so the payment must carry tfLoanLatePayment or the ledger rejects it (tecEXPIRED).
+    return submitRepay(ctx, loan.index as string, amount, "late repay", TF_LOAN_LATE_PAYMENT);
   },
 });
 
+// LoanPay flags, one per payment (the ledger allows at most one of these on a single LoanPay). Each tells
+// the ledger which payment rule to apply; without the matching flag the corresponding action is rejected:
+// an overpayment without tfLoanOverpayment → tecNO_PERMISSION, a payment after the due date without
+// tfLoanLatePayment → tecEXPIRED, an early full settlement without tfLoanFullPayment cannot close the loan.
+const TF_LOAN_OVERPAYMENT = 65536; // tfLoanOverpayment — pay more than the scheduled amount
+const TF_LOAN_FULL_PAYMENT = 131072; // tfLoanFullPayment — settle the whole outstanding balance at once
+const TF_LOAN_LATE_PAYMENT = 262144; // tfLoanLatePayment — pay after the payment due date has passed
+
 // A borrower that pays more than the amount due. Exercises the overpayment path; the payment carries
 // the overpayment flag so the ledger applies its overpayment rule.
-const TF_LOAN_OVERPAYMENT = 65536;
 export const overpay = (extra = "1000"): BotVariant => ({
   role: "borrower",
   name: "overpay",
@@ -87,7 +95,9 @@ export const repayEarly = (): BotVariant => ({
     if (!loan) return idle;
 
     const amount = outstandingToPay(ctx.session, loan.TotalValueOutstanding);
-    return submitRepay(ctx, loan.index as string, amount, "early repay");
+    // Settling the whole balance ahead of schedule: carry tfLoanFullPayment so the ledger closes the loan
+    // in one payment rather than treating it as a single scheduled instalment.
+    return submitRepay(ctx, loan.index as string, amount, "early repay", TF_LOAN_FULL_PAYMENT);
   },
 });
 

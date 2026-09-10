@@ -104,6 +104,10 @@ export async function originateLoan(ctx: CaseContext, borrower: Wallet, terms: L
     PaymentInterval: terms.paymentInterval,
     GracePeriod: terms.gracePeriod,
     LoanOriginationFee: "0",
+    // tfLoanOverpayment — permit overpayment on the loan, matching the engine's origination. Without it a
+    // LoanPay carrying tfLoanOverpayment is rejected (tecNO_PERMISSION), which is the bug the Foundation
+    // review flagged. Setting it here keeps the suite's loans consistent with the app's.
+    Flags: 65536,
     Memos: buildMemos(ctx.env.setupId, corr),
   };
   const prepared = await ctx.client.autofill(loanSet);
