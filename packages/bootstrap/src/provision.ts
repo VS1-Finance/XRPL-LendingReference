@@ -132,6 +132,13 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
       await createDomain(deps);
     }
     await createVault(deps);
+    // Seed liquidity immediately after the vault exists — right after SubscriptionDate is set, with
+    // max headroom before it — rather than after broker/cover, whose ledger round-trips can eat enough
+    // of a short subscription window that the seed VaultDeposit lands after SubscriptionDate and fails
+    // tecEXPIRED. VaultDeposit has no broker dependency, and the owner is already funded (fanOutFunding
+    // runs before createVault), so this is safe to run before createBroker.
+    await seedVaultLiquidity(deps);
+    log("seeded vault liquidity");
     await createBroker(deps);
 
     // The single-owner invariant is checked the moment both objects exist.
@@ -140,11 +147,6 @@ export async function provision(config: Config, options: ProvisionOptions = {}):
     await depositCover(deps);
     const { cover } = await assertCoverMeetsMinimum(client, accounts.owner.address, config.coverAmount);
     log(`cover seeded: ${cover}`);
-
-    // The vault is still in Subscription here (provisioning completes well within the default 180s
-    // window), so the owner's VaultDeposit is allowed — this seeds lendable liquidity for Investment.
-    await seedVaultLiquidity(deps);
-    log("seeded vault liquidity");
 
     const path = saveEnvironment(env, options.outDir);
     log(`wrote ${path}`);
