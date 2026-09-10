@@ -336,13 +336,24 @@ export async function ledgerTimeSeconds(client: Client): Promise<number> {
 // A permissive closed-ended vault window for the reference app. LendingProtocolV1_1 only lets a
 // closed-ended vault host a LoanBroker, and a closed-ended vault requires Subscription/Redemption dates
 // with a gap in [kMinInvestmentPeriod=180s, kMaxInvestmentPeriod=30 years). Dates are ripple-epoch
-// seconds (ledgerTimeSeconds already returns that clock). We open subscription at "now" (so deposits
-// work immediately, matching the app's existing open-vault behavior) and set redemption ~10 years out —
-// far enough that the demo lifecycle never bumps the window, well inside the 30-year ceiling.
+// seconds (ledgerTimeSeconds already returns that clock).
+//
+// subscriptionDate must be strictly in the FUTURE relative to the ledger that validates the
+// VaultCreate transaction, not just "now". rippled's VaultCreate::preclaim calls
+// hasExpired(SubscriptionDate) with the default ExpiryComparison::Inclusive, which treats the date as
+// expired once view.parentCloseTime() >= SubscriptionDate. ledgerTimeSeconds() reads the LAST-VALIDATED
+// close_time, but the transaction itself validates one or more ledgers later (ledgers close ~4s apart,
+// plus submit/provisioning latency) — so parentCloseTime() at validation time is always >= a
+// subscriptionDate set to "now", and the vault is rejected with tecEXPIRED. Do NOT "simplify" this back
+// to `now`. We lead by SUBSCRIPTION_LEAD_SECONDS (5 minutes) to comfortably clear that latency, and
+// anchor redemptionDate exactly TEN_YEARS_SECONDS after subscriptionDate (not independently off `now`)
+// so the [180s, 30yr) gap invariant holds exactly regardless of the lead.
+const SUBSCRIPTION_LEAD_SECONDS = 300;
 const TEN_YEARS_SECONDS = 10 * 365 * 24 * 3600;
 export async function closedEndedVaultWindow(client: Client): Promise<{ subscriptionDate: number; redemptionDate: number }> {
   const now = await ledgerTimeSeconds(client);
-  return { subscriptionDate: now, redemptionDate: now + TEN_YEARS_SECONDS };
+  const subscriptionDate = now + SUBSCRIPTION_LEAD_SECONDS;
+  return { subscriptionDate, redemptionDate: subscriptionDate + TEN_YEARS_SECONDS };
 }
 
 // Wait until the validated ledger has advanced by at least `minLedgers` beyond where it was when
