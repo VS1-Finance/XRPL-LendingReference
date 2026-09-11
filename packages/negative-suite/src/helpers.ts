@@ -1,5 +1,14 @@
-import { Wallet, signLoanSetByCounterparty, xrpToDrops, type Amount } from "xrpl";
-import { buildMemos, submitOrThrow, withRetry, type SubmitContext } from "@lending/shared";
+import { Wallet, xrpToDrops, type Amount } from "xrpl";
+import {
+  buildMemos,
+  ledgerTimeSeconds,
+  submitOrThrow,
+  vaultPhase,
+  waitForLedgerAdvance,
+  withRetry,
+  type SubmitContext,
+  signLoanSetByCounterpartyCPT,
+} from "@lending/shared";
 import type { CaseContext } from "./types.js";
 
 // A credential type is readable ASCII in config and hex on the ledger.
@@ -88,10 +97,41 @@ export interface LoanTerms {
   gracePeriod: number;
 }
 
+// Under closed-ended vault phases a LoanSet is only permitted once the vault has crossed out of
+// Subscription into Investment. Poll the owner's vault object (account_objects, type "vault") and its
+// phase (vaultPhase against the current ledger close time) until it reads "investment", advancing at
+// least one ledger between checks. A single waitForLedgerAdvance is NOT safe here — its default
+// timeout (15s, client.ts) can fire before the subscription window closes — so this loops with its own
+// generous overall deadline instead. The deadline must exceed the suite's subscriptionWindowSeconds
+// (runner.ts's provisionFor, currently 120s) plus margin, or this could throw before the vault ever
+// reaches Investment; 180s covers a 120s window with 60s of margin for provisioning/poll latency.
+export async function waitForInvestmentPhase(ctx: CaseContext): Promise<void> {
+  const deadline = Date.now() + 180_000; // must exceed the suite's subscriptionWindowSeconds (120s) + margin
+  while (Date.now() < deadline) {
+    const objs = await ctx.client.request({
+      command: "account_objects",
+      account: ctx.wallets.owner.address,
+      type: "vault",
+      ledger_index: "validated",
+    });
+    const vault = (objs.result.account_objects as unknown as Record<string, unknown>[]).find(
+      (o) => o.index === ctx.env.objects.vaultId,
+    );
+    const now = await ledgerTimeSeconds(ctx.client);
+    if (vault && vaultPhase(vault, now) === "investment") return;
+    await waitForLedgerAdvance(ctx.client, { minLedgers: 1, timeoutMs: 12_000 });
+  }
+  throw new Error("vault did not reach the investment phase within the deadline");
+}
+
 // Originate a loan with a bilateral (dual-signed) LoanSet: the owner signs, the borrower
 // counter-signs the same transaction. Returns the created loan's id. Used by the cases that need a
 // live loan to act against.
 export async function originateLoan(ctx: CaseContext, borrower: Wallet, terms: LoanTerms, correlation: string): Promise<string> {
+  // Closed-ended vault phases gate origination to Investment; deposit-then-originate cases call
+  // ensureDeposit (a plain deposit, landing in Subscription) before this, so this wait is what carries
+  // them across the phase boundary.
+  await waitForInvestmentPhase(ctx);
   const corr = correlation;
   const loanSet = {
     TransactionType: "LoanSet" as const,
@@ -104,11 +144,15 @@ export async function originateLoan(ctx: CaseContext, borrower: Wallet, terms: L
     PaymentInterval: terms.paymentInterval,
     GracePeriod: terms.gracePeriod,
     LoanOriginationFee: "0",
+    // tfLoanOverpayment — permit overpayment on the loan, matching the engine's origination. Without it a
+    // LoanPay carrying tfLoanOverpayment is rejected (tecNO_PERMISSION), which is the bug the Foundation
+    // review flagged. Setting it here keeps the suite's loans consistent with the app's.
+    Flags: 65536,
     Memos: buildMemos(ctx.env.setupId, corr),
   };
   const prepared = await ctx.client.autofill(loanSet);
   const ownerSigned = ctx.wallets.owner.sign(prepared);
-  const combined = signLoanSetByCounterparty(borrower, ownerSigned.tx_blob);
+  const combined = signLoanSetByCounterpartyCPT(borrower, ownerSigned.tx_blob);
   const res = await ctx.client.submitAndWait(combined.tx_blob);
   const meta = res.result.meta;
   const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";

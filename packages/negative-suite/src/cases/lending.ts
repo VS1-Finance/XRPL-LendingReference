@@ -126,20 +126,22 @@ const N11: NegativeCase = {
   },
 };
 
-// N12 — overpayment flag semantics. Observed behavior is that a payment above the amount due is
-// accepted WITHOUT the overpayment flag, and REJECTED with tfLoanOverpayment set — the flag is more
-// restrictive than the prose implies. This case asserts the rejection that the flag produces.
+// N12 — overpayment is a correctness case, not a rejection. When the loan is originated with
+// tfLoanOverpayment (as the app now does), a LoanPay carrying tfLoanOverpayment for more than the amount
+// due is ACCEPTED (tesSUCCESS). This is the fix for the Foundation review's finding that overpayment
+// failed 12/12 times: the flag must be enabled at origination, and then the overpaying payment carries
+// its matching LoanPay flag. The assertion is that it succeeds.
 const N12: NegativeCase = {
   id: "N12",
-  title: "overpayment with the overpayment flag set",
-  guards: "overpayment-flag semantics (observed inverted vs prose)",
-  expected: { kind: "reject", code: "tecNO_PERMISSION" },
+  title: "overpayment on an overpayment-enabled loan succeeds (correctness)",
+  guards: "tfLoanOverpayment set at origination permits overpayment",
+  expected: { kind: "success", note: "overpayment accepted when the loan enables it and the payment flags it" },
   async run(ctx) {
     const borrower = ctx.wallets.borrowers[0]!;
     await ensureDeposit(ctx, ctx.wallets.depositors[0]!, "20000", "N12-fund-vault");
     const loanId = await originateLoan(ctx, borrower, SHORT_TERM, "N12-originate");
     const tfLoanOverpayment = 65536;
-    return submitExpectReject(ctx, borrower, {
+    return submitExpectSuccess(ctx, borrower, {
       TransactionType: "LoanPay",
       Account: borrower.address,
       LoanID: loanId,

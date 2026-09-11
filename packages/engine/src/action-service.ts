@@ -1,6 +1,14 @@
-import { signLoanSetByCounterparty, xrpToDrops } from "xrpl";
+import { xrpToDrops } from "xrpl";
 import type { Amount, MPTAmount, SubmittableTransaction } from "xrpl";
-import { clampIssuedValueUp, decimalToScaled, deriveAccount } from "@lending/shared";
+import {
+  clampIssuedValueUp,
+  decimalToScaled,
+  deriveAccount,
+  ledgerTimeSeconds,
+  signLoanSetByCounterpartyCPT,
+  vaultPhase,
+} from "@lending/shared";
+import type { VaultPhase } from "@lending/shared";
 import type { Session } from "@lending/session";
 
 export interface ActionRequest {
@@ -56,6 +64,74 @@ const TF_LOAN_DEFAULT = 65536;
 // longer a live obligation, so it must not count toward the borrower's one-active-loan limit.
 const LSF_LOAN_DEFAULTED = 0x00010000;
 
+// tfLoanOverpayment on LoanSet — the origination flag that PERMITS a borrower to overpay this loan later.
+// Without it the ledger rejects any LoanPay carrying tfLoanOverpayment with tecNO_PERMISSION, so the
+// overpay bot variant fails every time. Set it at origination so an overpayment is a valid action on the
+// loan. (This is the LoanSet flag; the matching LoanPay flag of the same numeric value is set per-payment
+// by the paying side — see the borrower bot variants.)
+const TF_LOAN_SET_OVERPAYMENT = 0x00010000;
+
+// LoanPay flags, one per payment (the ledger permits at most one). Each selects the payment rule the
+// ledger applies; the matching action is otherwise rejected (late→tecEXPIRED, overpay→tecNO_PERMISSION).
+const LOAN_PAY_FLAGS: Record<string, number> = {
+  overpayment: 0x00010000, // tfLoanOverpayment
+  full: 0x00020000, // tfLoanFullPayment — settle the whole balance early
+  late: 0x00040000, // tfLoanLatePayment — pay after the due date
+};
+
+// Maps an optional payment-type string from a repay request to its single LoanPay flag. An unknown or
+// omitted type carries no flag — an ordinary on-schedule payment.
+export function loanPayFlags(paymentType: string | undefined): number | undefined {
+  if (!paymentType) return undefined;
+  const flag = LOAN_PAY_FLAGS[paymentType];
+  if (flag === undefined) throw new ActionError(`unknown paymentType ${paymentType}`, 400);
+  return flag;
+}
+
+// Which phases each phase-gated action is allowed in. Closed-ended vault lifecycle: subscription (open
+// for deposits) → investment (loans originate, no deposits/withdrawals) → redemption (withdrawals only).
+// Any action not in this map is ungated — repay, manage-loan, credential actions, etc. are allowed in
+// every phase (and on a non-closed-ended vault, where phase is always null).
+const ALLOWED_PHASES: Record<string, ReadonlySet<VaultPhase>> = {
+  deposit: new Set(["subscription"]),
+  originate: new Set(["investment"]),
+  "request-loan": new Set(["investment"]),
+  withdraw: new Set(["subscription", "redemption"]),
+};
+
+// Pure phase gate: does `action` belong in `phase`? Returns a clean ActionError(409) when it does not,
+// so the caller can front-run the ledger's opaque tecEXPIRED/tecTOO_SOON with a readable rejection
+// before ever building or submitting a transaction. `phase === null` means either a non-closed-ended
+// vault or a vault whose dates could not be read — either way there is no lifecycle to gate against, so
+// nothing is blocked. An action absent from ALLOWED_PHASES is likewise never gated.
+export function phaseGateError(action: string, phase: VaultPhase | null): ActionError | undefined {
+  if (phase === null) return undefined;
+  const allowed = ALLOWED_PHASES[action];
+  if (!allowed || allowed.has(phase)) return undefined;
+  return new ActionError(`${action} is not allowed during the ${phase} phase`, 409);
+}
+
+// Reads the owner's vault object (there is at most one per session) and derives its current phase from
+// the last-validated ledger's close time. Returns null when there is no vault object yet, or when
+// vaultPhase itself returns null (non-closed-ended vault, or a vault missing its dates) — either way the
+// caller treats it as ungated. This is the only vault read on the phase-gated paths; every other action
+// skips it entirely.
+async function currentVaultPhase(session: Session): Promise<VaultPhase | null> {
+  const res = await session.client.request({
+    command: "account_objects",
+    account: session.env.accounts.owner.address,
+    type: "vault",
+    ledger_index: "validated",
+  });
+  const vault = (res.result.account_objects as unknown as Record<string, unknown>[])[0];
+  if (!vault) return null;
+  return vaultPhase(vault, await ledgerTimeSeconds(session.client));
+}
+
+// Actions gated by dispatchAction's own phase check — deposit and withdraw. originate/request-loan are
+// gated separately in their own functions since they bypass dispatchAction entirely.
+const DISPATCH_GATED_ACTIONS = new Set(["deposit", "withdraw"]);
+
 // Turns an API action request into an on-ledger transaction signed by the seat that owns it. A human
 // action and a bot action reach the ledger the same way — through the seat's signer — so this is the
 // single place a human's intent becomes a submission. The seat must be held by the requesting
@@ -65,6 +141,14 @@ export async function dispatchAction(session: Session, request: ActionRequest, p
   if (!seat) throw new ActionError(`session has no seat ${request.seat}`, 404);
   if (seat.occupant.kind !== "human" || seat.occupant.id !== participant) {
     throw new ActionError(`${request.seat} is not held by ${participant}`, 409);
+  }
+
+  // Front-run the ledger's opaque tec-code with a clean 409 — but only for deposit/withdraw, so every
+  // other action (repay, manage-loan, credential actions...) adds no vault read at all.
+  if (DISPATCH_GATED_ACTIONS.has(request.action)) {
+    const phase = await currentVaultPhase(session);
+    const gateError = phaseGateError(request.action, phase);
+    if (gateError) throw gateError;
   }
 
   try {
@@ -98,11 +182,16 @@ async function buildTransaction(session: Session, account: string, request: Acti
 
     case "repay": {
       const loanId = required(p, "loanId");
+      // An optional payment type selects the single LoanPay flag the ledger needs for that behavior: a
+      // late payment (past the due date), a full early settlement, or an overpayment. Omitted → an
+      // ordinary on-schedule payment with no flag. Only one flag may be set on a LoanPay.
+      const flags = loanPayFlags(p.paymentType);
       return {
         TransactionType: "LoanPay",
         Account: account,
         LoanID: loanId,
         Amount: assetAmount(session, clampIssuedValueUp(required(p, "amount"))),
+        ...(flags !== undefined ? { Flags: flags } : {}),
       };
     }
 
@@ -205,6 +294,9 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
   if (!borrowerSeat) throw new ActionError(`session has no seat ${params.borrower}`, 404);
   if (borrowerSeat.role !== "borrower") throw new ActionError(`${borrowerSeat.role} seat cannot be a loan counterparty`, 409);
 
+  const originateGateError = phaseGateError("originate", await currentVaultPhase(session));
+  if (originateGateError) throw originateGateError;
+
   const term = paymentTotal(params.paymentTotal);
   const loanSet = {
     TransactionType: "LoanSet" as const,
@@ -218,6 +310,9 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
     GracePeriod: Number(params.grace ?? 60),
     ...(term !== undefined ? { PaymentTotal: term } : {}),
     LoanOriginationFee: "0",
+    // Permit overpayment on this loan so the overpay bot variant (and any borrower) can pay more than the
+    // scheduled amount without a tecNO_PERMISSION. Without this LoanSet flag the ledger disallows it.
+    Flags: TF_LOAN_SET_OVERPAYMENT,
   };
 
   // Origination needs two raw signatures on one transaction, which the single-signer submit path does
@@ -229,7 +324,7 @@ export async function originate(session: Session, ownerSeatKey: string, params: 
   try {
     const prepared = await session.client.autofill(loanSet);
     const ownerSigned = ownerWallet.sign(prepared);
-    const combined = signLoanSetByCounterparty(borrowerWallet, ownerSigned.tx_blob);
+    const combined = signLoanSetByCounterpartyCPT(borrowerWallet, ownerSigned.tx_blob);
     const res = await session.client.submitAndWait(combined.tx_blob);
     const meta = res.result.meta;
     const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";
@@ -271,6 +366,9 @@ export async function requestLoan(session: Session, borrowerSeatKey: string, par
     throw new ActionError("borrower already has an active loan", 409);
   }
 
+  const requestLoanGateError = phaseGateError("request-loan", await currentVaultPhase(session));
+  if (requestLoanGateError) throw requestLoanGateError;
+
   const term = paymentTotal(params.paymentTotal);
   const loanSet = {
     TransactionType: "LoanSet" as const,
@@ -283,6 +381,9 @@ export async function requestLoan(session: Session, borrowerSeatKey: string, par
     GracePeriod: Number(params.grace ?? 60),
     ...(term !== undefined ? { PaymentTotal: term } : {}),
     LoanOriginationFee: "0",
+    // Permit overpayment on this loan so the overpay bot variant (and any borrower) can pay more than the
+    // scheduled amount without a tecNO_PERMISSION. Without this LoanSet flag the ledger disallows it.
+    Flags: TF_LOAN_SET_OVERPAYMENT,
   };
 
   // The owner index comes from the resolved owner seat and the borrower index from the caller's seat,
@@ -293,7 +394,7 @@ export async function requestLoan(session: Session, borrowerSeatKey: string, par
   try {
     const prepared = await session.client.autofill(loanSet);
     const ownerSigned = ownerWallet.sign(prepared);
-    const combined = signLoanSetByCounterparty(borrowerWallet, ownerSigned.tx_blob);
+    const combined = signLoanSetByCounterpartyCPT(borrowerWallet, ownerSigned.tx_blob);
     const res = await session.client.submitAndWait(combined.tx_blob);
     const meta = res.result.meta;
     const code = typeof meta === "object" && meta && "TransactionResult" in meta ? meta.TransactionResult : "unknown";

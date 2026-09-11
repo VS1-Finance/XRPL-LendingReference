@@ -14,11 +14,28 @@ export async function findDomainId(client: Client, owner: string): Promise<strin
   return objs[0]?.index as string | undefined;
 }
 
-export async function findVault(client: Client, owner: string): Promise<{ index: string; shareMptId?: string } | undefined> {
+export async function findVault(
+  client: Client,
+  owner: string,
+): Promise<{ index: string; shareMptId?: string; vaultKind?: number; assetsTotal?: string } | undefined> {
   const objs = await accountObjects(client, owner, "vault");
   const vault = objs[0];
   if (!vault) return undefined;
-  return { index: vault.index as string, shareMptId: vault.ShareMPTID as string | undefined };
+  return {
+    index: vault.index as string,
+    shareMptId: vault.ShareMPTID as string | undefined,
+    vaultKind: vault.VaultKind as number | undefined,
+    // Raw ledger units: a plain string for XRP (drops) and MPT (integer units at the issuance's
+    // scale), or an issued-currency object ({currency, issuer, value}) for an IOU vault — same
+    // string-or-object shape findBrokerCover already handles for LoanBroker.CoverAvailable.
+    assetsTotal: readAmountString(vault.AssetsTotal),
+  };
+}
+
+function readAmountString(amount: unknown): string | undefined {
+  if (typeof amount === "string") return amount;
+  if (amount && typeof amount === "object" && "value" in amount) return String((amount as { value: unknown }).value);
+  return undefined;
 }
 
 export async function findBrokerId(client: Client, owner: string): Promise<string | undefined> {

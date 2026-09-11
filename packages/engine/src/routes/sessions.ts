@@ -31,6 +31,11 @@ interface ProvisionBody {
   paymentTotal?: number;
   // Whether the vault is permissioned (domain-gated, default) or public (open). false → public.
   permissioned?: boolean;
+  // Closed-ended vault lifecycle windows, in seconds. Omitted → the base config's values (which
+  // themselves default to 180 / 31536000). Forwarded to create() by the handlers' existing spreads,
+  // so no mapping code is needed.
+  subscriptionWindowSeconds?: number;
+  investmentWindowSeconds?: number;
 }
 
 // Session endpoints: create a session (provision a fresh environment), list sessions, and fetch one

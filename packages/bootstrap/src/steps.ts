@@ -1,6 +1,7 @@
 import {
   type Config,
   type DerivedAccountSet,
+  closedEndedVaultWindow,
   correlationId,
   decimalToScaled,
   isXrpAsset,
@@ -485,9 +486,23 @@ export async function createVault(deps: StepDeps): Promise<void> {
       ? { mpt_issuance_id: requireAssetMptId(deps) }
       : { currency: deps.config.asset.currency, issuer: deps.accounts.issuer.address };
 
+  // LendingProtocolV1_1: a LoanBroker can only attach to a CLOSED-ENDED vault. Compute the window here
+  // (before runBatch, since build() below must stay synchronous) and close over it in build(). The
+  // config's configurable windows (defaulted in schema.ts when the caller omits them) drive the
+  // Subscription/Investment period lengths, rather than the helper's own hardcoded defaults.
+  const window = await closedEndedVaultWindow(deps.client, {
+    subscriptionWindowSeconds: deps.config.subscriptionWindowSeconds,
+    investmentWindowSeconds: deps.config.investmentWindowSeconds,
+  });
+
   await runBatch(deps, [{
     action: "vault-create",
-    alreadyDone: async () => (await findVault(deps.client, owner.address)) !== undefined,
+    // Only a CLOSED-ENDED vault counts as already-provisioned — a stale open-ended vault from a
+    // pre-fix run must not skip this create (see findVault's vaultKind).
+    alreadyDone: async () => {
+      const v = await findVault(deps.client, owner.address);
+      return v !== undefined && v.vaultKind === 1;
+    },
     build: () => ({
       wallet: owner,
       tx: {
@@ -496,7 +511,13 @@ export async function createVault(deps: StepDeps): Promise<void> {
         Asset: asset,
         ...(permissioned ? { DomainID: domainId, Flags: VaultCreateFlags.tfVaultPrivate } : {}),
         WithdrawalPolicy: VaultWithdrawalPolicy.vaultStrategyFirstComeFirstServe,
-      },
+        // VaultKind=1 (ClosedEnded) plus a Subscription/Redemption window makes createBroker's
+        // LoanBrokerSet succeed instead of tecNO_PERMISSION. Fields are cast in because they postdate
+        // the xrpl VaultCreate model; the codec already serializes them (registered on connect).
+        VaultKind: 1,
+        SubscriptionDate: window.subscriptionDate,
+        RedemptionDate: window.redemptionDate,
+      } as unknown as SubmittableTransaction,
     }),
   }]);
   const vault = await findVault(deps.client, owner.address);
@@ -565,5 +586,44 @@ export async function depositCover(deps: StepDeps): Promise<void> {
       return Number(current) >= Number(requiredCover);
     },
     build: () => ({ wallet: owner, tx: { TransactionType: "LoanBrokerCoverDeposit", Account: owner.address, LoanBrokerID: brokerId, Amount: amount } }),
+  }]);
+}
+
+// A closed-ended vault's Investment phase can open with zero lendable liquidity if depositor/borrower
+// bots haven't deposited yet — nothing for a LoanSet to draw on. This step seeds a baseline: one owner
+// VaultDeposit of coverAmount (the owner is funded for coverAndLiquidity, 2x coverAmount, so it can
+// afford both the broker cover deposit above and this seed) while the vault is still in Subscription,
+// so lendable liquidity exists the moment Investment opens regardless of bot/human timing.
+export async function seedVaultLiquidity(deps: StepDeps): Promise<void> {
+  const owner = deps.accounts.owner.wallet;
+  const vaultId = deps.env.objects.vaultId;
+  if (!vaultId) throw new Error("cannot seed liquidity before the vault exists");
+
+  // Shaped per asset kind exactly like depositCover shapes cover: drops for XRP, {mpt_issuance_id,
+  // value} for MPT, {currency, issuer, value} for IOU. The configured coverAmount is always a
+  // whole-token value, converted to match the vault's raw ledger units.
+  const amount = isXrpAsset(deps.config.asset)
+    ? xrpToDrops(deps.config.coverAmount)
+    : isMptAsset(deps.config.asset)
+      ? { mpt_issuance_id: requireAssetMptId(deps), value: mptScaledAmount(deps.config, deps.config.coverAmount) }
+      : { currency: deps.config.asset.currency, issuer: deps.accounts.issuer.address, value: deps.config.coverAmount };
+
+  // Idempotent on the configured seed amount, in the same raw ledger units VaultInfo.AssetsTotal
+  // reports: drops for XRP, raw integer units for MPT, decimal value for IOU. A re-run whose vault
+  // already holds at least this much skips the deposit instead of stacking a second one.
+  const requiredAssets = isXrpAsset(deps.config.asset)
+    ? xrpToDrops(deps.config.coverAmount)
+    : isMptAsset(deps.config.asset)
+      ? mptScaledAmount(deps.config, deps.config.coverAmount)
+      : deps.config.coverAmount;
+
+  await runBatch(deps, [{
+    action: "seed-vault-liquidity",
+    alreadyDone: async () => {
+      const v = await findVault(deps.client, owner.address);
+      if (v === undefined || v.assetsTotal === undefined) return false;
+      return Number(v.assetsTotal) >= Number(requiredAssets);
+    },
+    build: () => ({ wallet: owner, tx: { TransactionType: "VaultDeposit", Account: owner.address, VaultID: vaultId, Amount: amount } }),
   }]);
 }

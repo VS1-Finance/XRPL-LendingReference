@@ -19,10 +19,19 @@ function mptSession(): Session {
   return {
     seed: "test-seed",
     seats: map,
-    client: { request: async () => { throw new Error("no ledger call expected"); } },
+    // dispatchAction now reads the owner's vault first to phase-gate deposit/withdraw. Return no vault
+    // object (a non-closed-ended vault in this test) so vaultPhase is null and the action is ungated,
+    // preserving this test's intent: amount validation, not a real ledger submit, is what's exercised.
+    client: {
+      request: async (req: { command: string }) => {
+        if (req.command === "account_objects") return { result: { account_objects: [] } };
+        throw new Error(`unexpected client call: ${req.command}`);
+      },
+    },
     env: {
       asset: { currency: "MPT" },
       objects: { vaultId: "V", assetMptId: "00081A9C7E4C5EFD1DFD0C6E8F5F3B0A5E4E2A1B2C3D4E5F" },
+      accounts: { owner: { address: "rOwner" } },
     },
   } as unknown as Session;
 }

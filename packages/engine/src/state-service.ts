@@ -1,4 +1,4 @@
-import { dropsToXrpString, ledgerTimeSeconds, scaledToDecimal } from "@lending/shared";
+import { dropsToXrpString, ledgerTimeSeconds, scaledToDecimal, vaultPhase, secondsUntilNextPhase, type VaultPhase } from "@lending/shared";
 import { isPermissioned } from "@lending/bootstrap";
 import type { Session } from "@lending/session";
 
@@ -7,7 +7,7 @@ import type { Session } from "@lending/session";
 // broker's cover, the loans and their status, and the seat map with who holds each.
 export interface SessionState {
   setupId: string;
-  vault: { assetsTotal: string; assetsAvailable: string; shareMptId?: string; sharesTotal?: string; lossUnrealized?: string; scale?: number } | null;
+  vault: { assetsTotal: string; assetsAvailable: string; shareMptId?: string; sharesTotal?: string; lossUnrealized?: string; scale?: number; phase: VaultPhase | null; subscriptionDate?: number; redemptionDate?: number; secondsUntilNextPhase: number | null } | null;
   broker: { coverAvailable: string; debtTotal?: string; debtMaximum?: string; managementFeeRate?: number; coverRateMinimum?: number; coverRateLiquidation?: number } | null;
   // Per loan: its balances and status, plus whether it can be defaulted right now and, if not yet,
   // how many seconds until it can be (past its next payment due date plus grace period).
@@ -110,6 +110,10 @@ export async function readSessionState(session: Session): Promise<SessionState> 
           sharesTotal,
           lossUnrealized: assetValue(vault.LossUnrealized),
           scale: Number(vault.Scale ?? 0),
+          phase: vaultPhase(vault, now),
+          ...(typeof vault.SubscriptionDate === "number" ? { subscriptionDate: Number(vault.SubscriptionDate) } : {}),
+          ...(typeof vault.RedemptionDate === "number" ? { redemptionDate: Number(vault.RedemptionDate) } : {}),
+          secondsUntilNextPhase: secondsUntilNextPhase(vault, now),
         }
       : null,
     broker: broker
