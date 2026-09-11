@@ -262,6 +262,18 @@ async function buildTransaction(session: Session, account: string, request: Acti
         Flags: TF_LOAN_DEFAULT,
       };
 
+    // Loan-originator action: delete a closed loan to free the borrower's reserve. A fully-repaid loan
+    // leaves a spent Loan object on the borrower's account holding an owner reserve; LoanDelete removes
+    // it. Owner-signed (the same account that originated it), like manage-loan above. The ledger enforces
+    // the precondition — a loan with outstanding debt is rejected with tecHAS_OBLIGATIONS — so no extra
+    // state check is needed here; the tec code surfaces cleanly to the caller.
+    case "delete-loan":
+      return {
+        TransactionType: "LoanDelete",
+        Account: account,
+        LoanID: required(p, "loanId"),
+      };
+
     // Owner action: add first-loss cover to the broker. Cover backs outstanding loans, so raising it
     // raises how much can be originated (loans must stay within the cover at the minimum cover rate).
     case "deposit-cover":
